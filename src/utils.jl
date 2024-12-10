@@ -1,7 +1,7 @@
 import Base: show
 using SparseArrays, Plots, StatsBase
-
-
+using GeometryBasics: Point2f
+using Colors
 
 const CHROMOSOME_ID_COUNTER = Ref(0)  # A mutable counter
 
@@ -149,12 +149,13 @@ function evaluate_fitness_exponential!(chromosome::Chromosome; X_obs = re, nnz_v
 
         # Loop over time steps and genes within this trial
         for t in 1:(time_steps_per_trial - 1)
-            for i in 1:N
-                # Predicted next state for gene i
-                X_pred = X_trial[t, i] + α[i] * (X_steady[i] - X_trial[t, i]) + sum(W[i, :] .* X_trial[t, :])
+            for j in 1:N
+                # Predicted next state for gene j
+                regulation_effect = sum(W[:, j] .* X_trial[t, :])
+                X_pred = X_trial[t, j] + α[j] * (X_steady[j] - X_trial[t, j]) + regulation_effect
 
                 # Exponential weighting loss
-                loss = exp(k_exp * abs(X_trial[t+1, i] - X_pred)) - 1
+                loss = exp(k_exp * abs(X_trial[t+1, j] - X_pred)) - 1
                 total_fitness -= loss
             end
         end
@@ -255,10 +256,17 @@ function evolutionary_algorithm(
     population_size, generations;
     X_obs = re, N = N, nnz_value = nnz_value, crossover_rate=0.7, mutation_rate=0.1,
     time_steps_per_trial=11, trials=5, k_exp=2.0
-    )
-
-
+)
+    # Initialize the population
     population = initialize_population(population_size, N, nnz_value)
+
+    # Repository for tracking all chromosomes
+    all_chromosomes = Dict{Int, Chromosome}()
+
+    # Store initial population
+    for chrom in population
+        all_chromosomes[chrom.id] = chrom
+    end
 
     # Fitness history for visualization
     fitness_history = Dict(:best => Float64[], :average => Float64[])
@@ -266,7 +274,7 @@ function evolutionary_algorithm(
     for gen in 1:generations
         println("Generation $gen")
 
-        # Step 2: Evaluate fitness for the population
+        # Step 1: Evaluate fitness for the population
         evaluate_population_exponential!(population; 
                                          X_obs=X_obs, nnz_value=nnz_value,
                                          time_steps_per_trial=time_steps_per_trial, 
@@ -281,66 +289,64 @@ function evolutionary_algorithm(
         # Print the best fitness
         println("Best fitness: ", population[1].fitness)
 
-        # Step 3: Selection - Retain the top half of the population
+        # Step 2: Selection - Retain the top half of the population
         num_parents = div(population_size, 2)
         parents = population[1:num_parents]
 
-        # Step 4: Recombination - Generate offspring
+        # Step 3: Recombination - Generate offspring
         offspring = Chromosome[]
         for _ in 1:(population_size - num_parents)
-            # Randomly select two parents
-            parent1, parent2 = sample_distinct_parents(parents)            
-            push!(offspring, recombine_chromosomes(parent1, parent2, gen))
+            parent1, parent2 = sample_distinct_parents(parents)
+            child = recombine_chromosomes(parent1, parent2, gen)
+            push!(offspring, child)
+
+            # Add child to repository
+            all_chromosomes[child.id] = child
         end
 
-        # Step 5: Mutation - Apply mutation to offspring
+        # Step 4: Mutation - Apply mutation to offspring
         for child in offspring
             mutate_chromosome!(child, mutation_rate)
-        end
-
-        # Step 6: Repair - Ensure offspring satisfy constraints
-        for child in offspring
             check_and_fix_chromosome!(child)
         end
 
-        # Replace the old population with parents and offspring
+        # Replace the population with parents and offspring
         population = vcat(parents, offspring)
     end
-    # Step 7: Visualize fitness history
-    display(visualize_fitness_history(fitness_history))
+
+    # Visualize fitness history
+    visualize_fitness_history(fitness_history)
+
+    # Build and visualize the family tree
+    # tree = build_family_tree(all_chromosomes)
+    # visualize_family_tree(tree)
 
     # Return the best chromosome after all generations
-    return population[1]
+    return population[1], all_chromosomes
 end
 
-function predict_next_states(chromosome::Chromosome, X_input::Matrix{Float64})
+
+function predict_time_series(chromosome::Chromosome, X_input::Matrix{Float64})
     """
-    Predicts the next states for the input time series using the chromosome's parameters.
+    Predict the next states for a time series using a chromosome.
     
     Args:
-        chromosome::Chromosome: The chromosome containing α, X_steady, and W.
-        X_input::Matrix{Float64}: A matrix of current states (time steps × genes).
+        chromosome::Chromosome: The chromosome containing the state transition function.
+        X_input::Matrix{Float64}: Previous states (time steps × genes).
     
     Returns:
-        Matrix{Float64}: Predicted states for the next time step (time steps × genes).
+        Matrix{Float64}: Predicted states for the next time steps (time steps - 1 × genes).
     """
-    N = size(X_input, 2)  # Number of genes
-    T = size(X_input, 1)  # Number of time steps
+    T, N = size(X_input)  # Time steps and number of genes
+    X_pred = zeros(T, N)  # Predictions for T-1 steps (t+1 states)
 
-    # Extract parameters
-    α = chromosome.α
-    X_steady = chromosome.X_steady
-    W = chromosome.W
-
-    # Initialize predictions
-    X_pred = similar(X_input)
-
-    # Predict each time step
     for t in 1:T
-        for i in 1:N
-            # Compute next state for gene i
-            regulation_effect = sum(W[i, :] .* X_input[t, :])
-            X_pred[t, i] = X_input[t, i] + α[i] * (X_steady[i] - X_input[t, i]) + regulation_effect
+        for j in 1:N
+            # Regulation effect from all genes regulating gene j
+            regulation_effect = sum(chromosome.W[:, j] .* X_input[t, :])
+
+            # Compute the predicted state for gene j
+            X_pred[t, j] = X_input[t, j] + chromosome.α[j] * (chromosome.X_steady[j] - X_input[t, j]) + regulation_effect
         end
     end
 
@@ -348,15 +354,111 @@ function predict_next_states(chromosome::Chromosome, X_input::Matrix{Float64})
 end
 
 
-pop = initialize_population(100, N, nnz_value)
-s = evolutionary_algorithm(5, 100)
+function evaluate_prediction_error(X_obs::Matrix{Float64}, X_pred::Matrix{Float64})
+    """
+    Evaluate error metrics between observed and predicted states.
+    
+    Args:
+        X_obs::Matrix{Float64}: Observed data (time steps × genes).
+        X_pred::Matrix{Float64}: Predicted data (time steps × genes).
+    
+    Returns:
+        Dict: Error metrics (MSE, MAE, RMSE).
+    """
+    T, N = size(X_obs)
+    mse = sum((X_obs .- X_pred).^2) / (T * N)
+    mae = sum(abs.(X_obs .- X_pred)) / (T * N)
+    rmse = sqrt(mse)
 
-pred = predict_next_states(s, re[1:10,:])
-cur = re[1:10,:]
-w = s.W
+    return Dict("MSE" => mse, "MAE" => mae, "RMSE" => rmse)
+end
 
 
-g = 7 
-w[:,g]
-plot(pred[:,g])
-plot!(cur[:,g])
+s, k = evolutionary_algorithm(10, 10)
+
+pred = predict_time_series(s, re[1:10,:])
+cur = re[2:11,:]
+evaluate_prediction_error(cur, pred)
+
+# arr = []
+
+# for g in 1:3
+#    pt = plot(pred[:,g], label = false)
+#    plot!(cur[:,g], label = false)
+#    push!(arr, pt)
+# end 
+# plot(k, arr...)
+# y_shift = 100
+# plot(k, xscale =:log10)
+
+using Colors  # For color utilities
+
+function visualize_family_tree(tree::Dict{Int, Tuple{Int, Int}}, chromosome_data::Dict{Int, Chromosome})
+    g = SimpleDiGraph()
+    id_to_node = Dict{Int, Int}()
+
+    # Add nodes and edges
+    for (id, parents) in tree
+        if !haskey(id_to_node, id)
+            id_to_node[id] = add_vertex!(g)
+        end
+        for parent in parents
+            if parent != -1  # Ignore invalid parents
+                if !haskey(id_to_node, parent)
+                    id_to_node[parent] = add_vertex!(g)
+                end
+                add_edge!(g, id_to_node[parent], id_to_node[id])
+            end
+        end
+    end
+
+    # Generate node labels
+    node_labels = [string(id, "\nGen:", chromosome_data[id].generation, "\nFit:", round(chromosome_data[id].fitness, digits=2)) for id in keys(tree)]
+
+    # Precompute positions: separate x and y coordinates
+    loc_x = [chromosome_data[id].generation for id in keys(tree)]  # X-coordinates based on generation
+    loc_y = [id for id in keys(tree)]  # Y-coordinates based on ID or other attribute
+
+    # Define node colors (e.g., generation-based coloring)
+    node_colors = [RGB(0.3, 0.6, 0.9) for _ in keys(tree)]  # Light blue for all nodes
+
+    # Define edge colors
+    edge_colors = [RGB(0.2, 0.2, 0.2) for _ in edges(g)]  # Dark gray for edges
+
+    # Plot the graph
+    z = gplot(
+        g,
+        loc_x, loc_y,
+        nodelabel=node_labels,
+        title="Family Tree of Chromosomes",
+        nodesize=0.5,
+        nodefillc=node_colors,
+        edgestrokec=edge_colors
+    )
+    z
+end
+
+function build_family_tree(all_chromosomes::Dict{Int, Chromosome})
+    tree = Dict{Int, Tuple{Int, Int}}()
+    for (id, chrom) in all_chromosomes
+        tree[id] = chrom.parents
+    end
+    return tree
+end
+
+tree = Dict(
+    1 => (-1, -1),
+    2 => (1, -1),
+    3 => (1, 2),
+    4 => (2, 3)
+)
+
+# Example chromosome data
+chromosome_data = Dict(
+    1 => Chromosome(rand(10), rand(10), sprand(Float64, 10, 10, 0.1), -Inf, (-1, -1), 0, 1),
+    2 => Chromosome(rand(10), rand(10), sprand(Float64, 10, 10, 0.1), -Inf, (1, -1), 1, 2),
+    3 => Chromosome(rand(10), rand(10), sprand(Float64, 10, 10, 0.1), -Inf, (1, 2), 2, 3),
+    4 => Chromosome(rand(10), rand(10), sprand(Float64, 10, 10, 0.1), -Inf, (2, 3), 3, 4)
+)
+
+

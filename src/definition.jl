@@ -1,2 +1,2 @@
 N = 10
-nnz_value = 15
+nnz_value = 80
