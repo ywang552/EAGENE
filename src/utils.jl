@@ -416,7 +416,7 @@ function evaluate_prediction_error(X_obs::Matrix{Float64}, X_pred::Matrix{Float6
 end
 
 
-# s, k = evolutionary_algorithm(1000, 100)
+s, k = evolutionary_algorithm(1000, 100)
 
 pred = predict_time_series(s, re[1:10,:])
 cur = re[2:11,:]
@@ -435,4 +435,4 @@ pop = fill(p[1], 100)
 pop[1].W
 pop[2].W
 
-calculate_entropy(pop, 10)
+calculate_entropy_refined(pop, 10)
