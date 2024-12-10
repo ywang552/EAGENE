@@ -4,7 +4,7 @@ using SparseArrays, StatsBase
 using Plots
 a, b = "d4", 1
 fp = joinpath("data", "small")
-x
+
 fn = "$(a)_$(b)_wt.tsv"
 data = CSV.read(joinpath(fp, fn), DataFrame; delim='\t')
 wt = Matrix(data)

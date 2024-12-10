@@ -17,6 +17,15 @@ function track_fitness(population, fitness_history)
     push!(fitness_history[:average], avg_fitness)
 end
 
+mutable struct Chromosome
+    α::Vector{Float64}        # Self-regulation values
+    X_steady::Vector{Float64} # Steady-state values
+    W::SparseMatrixCSC{Float64, Int} # Gene regulation matrix
+    fitness::Float64          # Fitness score
+    parents::Tuple{Int, Int}  # Indices of parents (-1, -1 for initial population)
+    generation::Int           # The generation this chromosome belongs to
+    id::Int                   # Unique ID for the chromosome
+end
 
 
 function show(io::IO, chromosome::Chromosome)
@@ -34,15 +43,7 @@ function show(io::IO, chromosome::Chromosome)
     # end
 end
 
-mutable struct Chromosome
-    α::Vector{Float64}        # Self-regulation values
-    X_steady::Vector{Float64} # Steady-state values
-    W::SparseMatrixCSC{Float64, Int} # Gene regulation matrix
-    fitness::Float64          # Fitness score
-    parents::Tuple{Int, Int}  # Indices of parents (-1, -1 for initial population)
-    generation::Int           # The generation this chromosome belongs to
-    id::Int                   # Unique ID for the chromosome
-end
+
 
 
 
@@ -267,12 +268,14 @@ function evolutionary_algorithm(
     for chrom in population
         all_chromosomes[chrom.id] = chrom
     end
+    entropy_history = []
 
     # Fitness history for visualization
     fitness_history = Dict(:best => Float64[], :average => Float64[])
 
     for gen in 1:generations
         println("Generation $gen")
+        push!(entropy_history, calculate_entropy(population, N))
 
         # Step 1: Evaluate fitness for the population
         evaluate_population_exponential!(population; 
@@ -312,10 +315,17 @@ function evolutionary_algorithm(
 
         # Replace the population with parents and offspring
         population = vcat(parents, offspring)
+
+        display(plot(1:length(entropy_history), entropy_history, xlabel="Generation", ylabel="Entropy", title="Population Diversity Over Time")        )
+        if (gen % 50 == 0)
+            display(visualize_fitness_history(fitness_history))
+        end 
+
     end
 
     # Visualize fitness history
-    visualize_fitness_history(fitness_history)
+
+
 
     # Build and visualize the family tree
     # tree = build_family_tree(all_chromosomes)
@@ -324,6 +334,38 @@ function evolutionary_algorithm(
     # Return the best chromosome after all generations
     return population[1], all_chromosomes
 end
+
+
+function calculate_entropy_refined(population::Vector{Chromosome}, N::Int)
+    P = length(population)  # Population size
+
+    # Initialize connection count matrix
+    connection_counts = zeros(Float64, N, N)
+
+    # Count occurrences of non-zero connections across the population
+    for chrom in population
+        connection_counts .+= (chrom.W .!= 0)
+    end
+
+    # Compute probabilities (frequency of each connection)
+    probabilities = connection_counts ./ P
+
+    # Compute sparsity
+    nnz_value = sum(connection_counts .!= 0) / P  # Average nnz across population
+    sparsity = nnz_value / (N^2)
+
+    # Exclude zero probabilities and compute entropy
+    valid_probs = probabilities[probabilities .> 0]
+    entropy = -sum(valid_probs .* log.(valid_probs))
+
+    # Normalize entropy by sparsity and maximum entropy
+    max_entropy = -sparsity * log(sparsity + eps())
+    normalized_entropy = entropy / (max_entropy + eps())
+
+    return normalized_entropy
+end
+
+
 
 
 function predict_time_series(chromosome::Chromosome, X_input::Matrix{Float64})
@@ -374,91 +416,23 @@ function evaluate_prediction_error(X_obs::Matrix{Float64}, X_pred::Matrix{Float6
 end
 
 
-s, k = evolutionary_algorithm(10, 10)
+# s, k = evolutionary_algorithm(1000, 100)
 
 pred = predict_time_series(s, re[1:10,:])
 cur = re[2:11,:]
 evaluate_prediction_error(cur, pred)
 
-# arr = []
+bw = s.W .!= 0 
+bw .== 1 .&& gs.==1
 
-# for g in 1:3
-#    pt = plot(pred[:,g], label = false)
-#    plot!(cur[:,g], label = false)
-#    push!(arr, pt)
-# end 
-# plot(k, arr...)
-# y_shift = 100
-# plot(k, xscale =:log10)
+g = 4
+plot(pred[:,g])
+plot!(cur[:,g])
 
-using Colors  # For color utilities
+p = initialize_population(1, 10, 20)
+pop = fill(p[1], 100)
 
-function visualize_family_tree(tree::Dict{Int, Tuple{Int, Int}}, chromosome_data::Dict{Int, Chromosome})
-    g = SimpleDiGraph()
-    id_to_node = Dict{Int, Int}()
+pop[1].W
+pop[2].W
 
-    # Add nodes and edges
-    for (id, parents) in tree
-        if !haskey(id_to_node, id)
-            id_to_node[id] = add_vertex!(g)
-        end
-        for parent in parents
-            if parent != -1  # Ignore invalid parents
-                if !haskey(id_to_node, parent)
-                    id_to_node[parent] = add_vertex!(g)
-                end
-                add_edge!(g, id_to_node[parent], id_to_node[id])
-            end
-        end
-    end
-
-    # Generate node labels
-    node_labels = [string(id, "\nGen:", chromosome_data[id].generation, "\nFit:", round(chromosome_data[id].fitness, digits=2)) for id in keys(tree)]
-
-    # Precompute positions: separate x and y coordinates
-    loc_x = [chromosome_data[id].generation for id in keys(tree)]  # X-coordinates based on generation
-    loc_y = [id for id in keys(tree)]  # Y-coordinates based on ID or other attribute
-
-    # Define node colors (e.g., generation-based coloring)
-    node_colors = [RGB(0.3, 0.6, 0.9) for _ in keys(tree)]  # Light blue for all nodes
-
-    # Define edge colors
-    edge_colors = [RGB(0.2, 0.2, 0.2) for _ in edges(g)]  # Dark gray for edges
-
-    # Plot the graph
-    z = gplot(
-        g,
-        loc_x, loc_y,
-        nodelabel=node_labels,
-        title="Family Tree of Chromosomes",
-        nodesize=0.5,
-        nodefillc=node_colors,
-        edgestrokec=edge_colors
-    )
-    z
-end
-
-function build_family_tree(all_chromosomes::Dict{Int, Chromosome})
-    tree = Dict{Int, Tuple{Int, Int}}()
-    for (id, chrom) in all_chromosomes
-        tree[id] = chrom.parents
-    end
-    return tree
-end
-
-tree = Dict(
-    1 => (-1, -1),
-    2 => (1, -1),
-    3 => (1, 2),
-    4 => (2, 3)
-)
-
-# Example chromosome data
-chromosome_data = Dict(
-    1 => Chromosome(rand(10), rand(10), sprand(Float64, 10, 10, 0.1), -Inf, (-1, -1), 0, 1),
-    2 => Chromosome(rand(10), rand(10), sprand(Float64, 10, 10, 0.1), -Inf, (1, -1), 1, 2),
-    3 => Chromosome(rand(10), rand(10), sprand(Float64, 10, 10, 0.1), -Inf, (1, 2), 2, 3),
-    4 => Chromosome(rand(10), rand(10), sprand(Float64, 10, 10, 0.1), -Inf, (2, 3), 3, 4)
-)
-
-
+calculate_entropy(pop, 10)
