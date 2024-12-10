@@ -72,3 +72,33 @@ function determine_steady_state(X_trial, X_steady, delta)
     end
     return T_recover
 end
+
+
+function calculate_entropy_refined(population::Vector{Chromosome}, N::Int)
+    P = length(population)  # Population size
+
+    # Initialize connection count matrix
+    connection_counts = zeros(Float64, N, N)
+
+    # Count occurrences of non-zero connections across the population
+    for chrom in population
+        connection_counts .+= (chrom.W .!= 0)
+    end
+
+    # Compute probabilities (frequency of each connection)
+    probabilities = connection_counts ./ P
+
+    # Compute sparsity
+    nnz_value = sum(connection_counts .!= 0) / P  # Average nnz across population
+    sparsity = nnz_value / (N^2)
+
+    # Exclude zero probabilities and compute entropy
+    valid_probs = probabilities[probabilities .> 0]
+    entropy = -sum(valid_probs .* log.(valid_probs))
+
+    # Normalize entropy by sparsity and maximum entropy
+    max_entropy = -sparsity * log(sparsity + eps())
+    normalized_entropy = entropy / (max_entropy + eps())
+
+    return normalized_entropy
+end

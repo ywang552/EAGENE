@@ -2,6 +2,10 @@ import Base: show
 using SparseArrays, Plots, StatsBase
 using GeometryBasics: Point2f
 using Colors
+using LinearAlgebra
+using MultivariateStats
+
+
 
 const CHROMOSOME_ID_COUNTER = Ref(0)  # A mutable counter
 
@@ -182,16 +186,17 @@ function visualize_fitness_history(fitness_history)
     p = plot(
         generations,
         fitness_history[:best],
-        label="Best Fitness",
         xlabel="Generation",
         ylabel="Fitness",
+        label = false,
         title="Fitness Evolution",
         linewidth=2
     )
     plot!(
         generations,
+        label = false,
+        xscale = :log10, 
         fitness_history[:average],
-        label="Average Fitness",
         linewidth=2,
         linestyle=:dash
     )
@@ -253,117 +258,145 @@ function sample_distinct_parents(parents::Vector{Chromosome})
 end
 
 
+using MultivariateStats
+using LinearAlgebra
+
+function calculate_pca_diversity(population::Vector{Chromosome})
+    # Flatten the W matrices for each chromosome in the population
+    flattened_W = [reshape(Matrix(chromosome.W .!= 0), :) for chromosome in population]  # Binarize and flatten
+    P = hcat(flattened_W...)'  # Create the population matrix (k × N^2)
+
+    # Perform PCA
+    pca_model = fit(PCA, P; maxoutdim=min(size(P)...))  # Fit PCA to population matrix
+
+    # Explained variance (prinvars) and cumulative variance (tprinvar)
+    explained_variance = pca_model.prinvars / pca_model.tvar
+    cumulative_variance = cumsum(explained_variance)
+
+    # Find the number of components explaining 95% variance
+    num_components_95 = findfirst(cumulative_variance .>= 0.95)
+    # Ensure cumulative_variance is a vector
+    if !isa(cumulative_variance, AbstractVector)
+        cumulative_variance = [cumulative_variance]  # Convert to a single-element vector if necessary
+    end
+
+    # Return PCA results
+    return pca_model, explained_variance, cumulative_variance, num_components_95
+end
+
+
+
+
+function plot_pca_results(explained_variance, cumulative_variance)
+    # Scree plot: Explained variance per component
+    plt1 = plot(explained_variance, marker=:o, label="Explained Variance",
+                xlabel="Principal Component", ylabel="Variance Explained",
+                title="Scree Plot")
+
+    # Cumulative explained variance
+    plt2 = plot(cumulative_variance, marker=:o, label="Cumulative Variance",
+                xlabel="Principal Component", ylabel="Cumulative Variance",
+                title="Cumulative Variance Explained", color=:blue)
+
+    # Combine plots
+    # display(plt1)
+    display(plot(plt1, plt2, layout=(1, 2), legend=:bottomright))
+end
+
+
+function plot_population_in_pca_space(pca_model)
+    # Access the transformed data
+    P_pca = pca_model.proj
+
+    # Scatter plot in PCA space
+    scatter(P_pca[:, 1], P_pca[:, 2], xlabel="PC1", ylabel="PC2",
+            title="Population Diversity in PCA Space",
+            legend=false, color=:blue, markersize=5)
+end
+
+function compute_top_fraction_variance(explained_variance, m)
+    # Sum variance of top m components
+    fraction_top = sum(explained_variance[1:min(m, length(explained_variance))])
+    return fraction_top
+end
+
+
 function evolutionary_algorithm(
     population_size, generations;
     X_obs = re, N = N, nnz_value = nnz_value, crossover_rate=0.7, mutation_rate=0.1,
-    time_steps_per_trial=11, trials=5, k_exp=2.0
+    time_steps_per_trial=11, trials=5, k_exp=2.0, pc = 50
 )
+    println("Starting...")
     # Initialize the population
     population = initialize_population(population_size, N, nnz_value)
 
-    # Repository for tracking all chromosomes
-    all_chromosomes = Dict{Int, Chromosome}()
-
-    # Store initial population
-    for chrom in population
-        all_chromosomes[chrom.id] = chrom
-    end
     entropy_history = []
-
-    # Fitness history for visualization
     fitness_history = Dict(:best => Float64[], :average => Float64[])
 
-    for gen in 1:generations
-        println("Generation $gen")
-        push!(entropy_history, calculate_entropy(population, N))
+    try
+        for gen in 1:generations
+            pca_model, explained_variance, cumulative_variance, num_components_95 = calculate_pca_diversity(population)
+            push!(entropy_history, compute_top_fraction_variance(explained_variance, minimum([3, div(length(explained_variance), 10)])))
 
-        # Step 1: Evaluate fitness for the population
-        evaluate_population_exponential!(population; 
-                                         X_obs=X_obs, nnz_value=nnz_value,
-                                         time_steps_per_trial=time_steps_per_trial, 
-                                         trials=trials, k_exp=k_exp)
+            # Step 1: Evaluate fitness for the population
+            evaluate_population_exponential!(population; 
+                                             X_obs=X_obs, nnz_value=nnz_value,
+                                             time_steps_per_trial=time_steps_per_trial, 
+                                             trials=trials, k_exp=k_exp)
 
-        # Track fitness
-        track_fitness(population, fitness_history)
+            # Track fitness
+            track_fitness(population, fitness_history)
 
-        # Sort population by fitness (descending order)
-        population = sort(population, by=c -> c.fitness, rev=true)
+            # Sort population by fitness (descending order)
+            population = sort(population, by=c -> c.fitness, rev=true)
 
-        # Print the best fitness
-        println("Best fitness: ", population[1].fitness)
+            # Print the best fitness
+            if gen % pc == 0
+                println("Generation $gen")
+                println("Best fitness: ", population[1].fitness)
+            end 
 
-        # Step 2: Selection - Retain the top half of the population
-        num_parents = div(population_size, 2)
-        parents = population[1:num_parents]
+            # Step 2: Selection - Retain the top half of the population
+            num_parents = div(population_size, 2)
+            parents = population[1:num_parents]
 
-        # Step 3: Recombination - Generate offspring
-        offspring = Chromosome[]
-        for _ in 1:(population_size - num_parents)
-            parent1, parent2 = sample_distinct_parents(parents)
-            child = recombine_chromosomes(parent1, parent2, gen)
-            push!(offspring, child)
+            # Step 3: Recombination - Generate offspring
+            offspring = Chromosome[]
+            for _ in 1:(population_size - num_parents)
+                parent1, parent2 = sample_distinct_parents(parents)
+                child = recombine_chromosomes(parent1, parent2, gen)
+                push!(offspring, child)
+            end
 
-            # Add child to repository
-            all_chromosomes[child.id] = child
+            # Step 4: Mutation - Apply mutation to offspring
+            for child in offspring
+                mutate_chromosome!(child, mutation_rate)
+                check_and_fix_chromosome!(child)
+            end
+
+            # Replace the population with parents and offspring
+            population = vcat(parents, offspring)
+
+            # Visualization
+            if gen % pc == 0
+                p1 = plot(1:length(entropy_history), xscale=:log10, label=false, entropy_history,
+                          xlabel="Generation", ylabel="Similarity", title="Population Similarity Over Time")
+                p2 = visualize_fitness_history(fitness_history)
+                display(plot(p1, p2, layout=(2, 1)))
+            end
         end
-
-        # Step 4: Mutation - Apply mutation to offspring
-        for child in offspring
-            mutate_chromosome!(child, mutation_rate)
-            check_and_fix_chromosome!(child)
-        end
-
-        # Replace the population with parents and offspring
-        population = vcat(parents, offspring)
-
-        display(plot(1:length(entropy_history), entropy_history, xlabel="Generation", ylabel="Entropy", title="Population Diversity Over Time")        )
-        if (gen % 50 == 0)
-            display(visualize_fitness_history(fitness_history))
-        end 
-
+    catch e 
+        # println("Error occurred in Generation $gen:")
+        println("Error Details: ", e)
+        # println(stacktrace(e))
+        throw(e)  # Rethrow the error after logging
+    finally
+        # Always return the current population and all_chromosomes
+        return population[1], population
     end
-
-    # Visualize fitness history
-
-
-
-    # Build and visualize the family tree
-    # tree = build_family_tree(all_chromosomes)
-    # visualize_family_tree(tree)
-
-    # Return the best chromosome after all generations
-    return population[1], all_chromosomes
 end
 
 
-function calculate_entropy_refined(population::Vector{Chromosome}, N::Int)
-    P = length(population)  # Population size
-
-    # Initialize connection count matrix
-    connection_counts = zeros(Float64, N, N)
-
-    # Count occurrences of non-zero connections across the population
-    for chrom in population
-        connection_counts .+= (chrom.W .!= 0)
-    end
-
-    # Compute probabilities (frequency of each connection)
-    probabilities = connection_counts ./ P
-
-    # Compute sparsity
-    nnz_value = sum(connection_counts .!= 0) / P  # Average nnz across population
-    sparsity = nnz_value / (N^2)
-
-    # Exclude zero probabilities and compute entropy
-    valid_probs = probabilities[probabilities .> 0]
-    entropy = -sum(valid_probs .* log.(valid_probs))
-
-    # Normalize entropy by sparsity and maximum entropy
-    max_entropy = -sparsity * log(sparsity + eps())
-    normalized_entropy = entropy / (max_entropy + eps())
-
-    return normalized_entropy
-end
 
 
 
@@ -416,23 +449,26 @@ function evaluate_prediction_error(X_obs::Matrix{Float64}, X_pred::Matrix{Float6
 end
 
 
-s, k = evolutionary_algorithm(1000, 100)
+best_solution, final_population = evolutionary_algorithm(100, 5000)
 
-pred = predict_time_series(s, re[1:10,:])
-cur = re[2:11,:]
-evaluate_prediction_error(cur, pred)
 
-bw = s.W .!= 0 
-bw .== 1 .&& gs.==1
 
-g = 4
-plot(pred[:,g])
-plot!(cur[:,g])
 
-p = initialize_population(1, 10, 20)
-pop = fill(p[1], 100)
 
-pop[1].W
-pop[2].W
 
-calculate_entropy_refined(pop, 10)
+
+
+
+
+# s, k = evolutionary_algorithm(1000, 100)
+
+# pred = predict_time_series(s, re[1:10,:])
+# cur = re[2:11,:]
+# evaluate_prediction_error(cur, pred)
+
+# bw = s.W .!= 0 
+# bw .== 1 .&& gs.==1
+
+# g = 4
+# plot(pred[:,g])
+# plot!(cur[:,g])
