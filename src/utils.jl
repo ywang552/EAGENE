@@ -133,51 +133,7 @@ function mutate_chromosome!(chromosome::Chromosome, mutation_rate::Float64)
     end
 end
 
-# function evaluate_fitness_exponential!(chromosome::Chromosome; re = re, nnz_value = 16, 
-#                                         time_steps_per_trial = 11, trials = 5, k_exp = 2)
-#     # Extract chromosome parameters
-#     α = chromosome.α
-#     X_steady = chromosome.X_steady
-#     W = chromosome.W
-#     N = length(α)  # Number of genes
-
-#     # Precompute (I - W)
-#     I_minus_W = Matrix{Float64}(I, size(W)) - W
-#     if rank(I_minus_W) < N
-#         error("Matrix (I - W) is singular and cannot be inverted.")
-#     end
-
-#     # Precomputed reshaped matrix (re = X_obs_reshaped)
-#     X_obs_reshaped = re  # Already reshaped during preprocessing
-#     X_current = X_obs_reshaped[1:end-1, :, :]  # Current state X_t
-
-#     # Compute predictions for all time steps and trials
-#     regulation_term = (I_minus_W) \ reshape(X_current, (N, :))  # Compute in batch
-#     regulation_term = reshape(regulation_term, size(X_current))  # Reshape back to 3D
-
-#     # Add self-regulation and steady-state correction
-#     α_correction = α .* (X_steady .- X_current)  # Broadcasting α term
-#     X_pred = X_current + α_correction + regulation_term  # Predicted next state
-
-#     # Compute fitness loss for all genes, time steps, and trials
-#     X_next = X_obs_reshaped[2:end, :, :]  # Observed next state X_t+1
-#     loss_matrix = exp.(k_exp .* abs.(X_next .- X_pred)) .- 1  # Element-wise loss
-#     total_fitness = -sum(loss_matrix)  # Accumulate total loss
-
-#     # Penalize non-zero elements in W
-#     nnz_W = count(!iszero, W)
-#     if nnz_W > nnz_value
-#         total_fitness -= 1000 * (nnz_W - nnz_value)
-#     end
-
-#     # Normalize fitness
-#     total_fitness /= (trials * time_steps_per_trial * N)
-
-#     # Update fitness in the chromosome struct
-#     chromosome.fitness = total_fitness
-# end
-
-function evaluate_fitness_exponential!(chromosome::Chromosome; X_obs = re, nnz_value = 16,
+function evaluate_fitness_exponential!(chromosome::Chromosome; re = re, nnz_value = 16, 
                                         time_steps_per_trial = 11, trials = 5, k_exp = 2)
     # Extract chromosome parameters
     α = chromosome.α
@@ -185,44 +141,88 @@ function evaluate_fitness_exponential!(chromosome::Chromosome; X_obs = re, nnz_v
     W = chromosome.W
     N = length(α)  # Number of genes
 
-    # Initialize fitness
-    total_fitness = 0.0
-
-    # Loop over trials
-    for trial in 1:trials
-        # Extract trial-specific data
-        trial_start = (trial - 1) * time_steps_per_trial + 1
-        trial_end = trial * time_steps_per_trial
-        X_trial = X_obs[trial_start:trial_end, :]
-
-        # Loop over time steps and genes within this trial
-        for t in 1:(time_steps_per_trial - 1)
-            for j in 1:N
-                # Predicted next state for gene j
-                regulation_effect = sum(W[:, j] .* X_trial[t, :])
-                X_pred = X_trial[t, j] + α[j] * (X_steady[j] - X_trial[t, j]) + regulation_effect
-
-                # Exponential weighting loss
-                loss = exp(k_exp * abs(X_trial[t+1, j] - X_pred)) - 1
-                total_fitness -= loss
-            end
-        end
+    # Precompute (I - W)
+    I_minus_W = Matrix{Float64}(I, size(W)) - W
+    if rank(I_minus_W) < N
+        error("Matrix (I - W) is singular and cannot be inverted.")
     end
 
-    # Calculate number of non-zero elements in W
-    nnz_W = count(!iszero, W)
+    # Precomputed reshaped matrix (re = X_obs_reshaped)
+    X_obs_reshaped = re  # Already reshaped during preprocessing
+    X_current = X_obs_reshaped[1:end-1, :, :]  # Current state X_t
 
-    # Apply penalty based on nnz(W)
-    if nnz_W > nnz_value
-        total_fitness -= 1000 * (nnz_W - nnz_value)  # Severe penalty
-    end
+    # Compute predictions for all time steps and trials
+    regulation_term = (I_minus_W) \ reshape(X_current, (N, :))  # Compute in batch
+    regulation_term = reshape(regulation_term, size(X_current))  # Reshape back to 3D
 
-    # Normalize by the number of genes and time steps
+    # Add self-regulation and steady-state correction
+    α_correction = α .* (X_steady .- X_current)  # Broadcasting α term
+    X_pred = X_current + α_correction + regulation_term  # Predicted next state
+
+    # Compute fitness loss for all genes, time steps, and trials
+    X_next = X_obs_reshaped[2:end, :, :]  # Observed next state X_t+1
+    loss_matrix = exp.(k_exp .* abs.(X_next .- X_pred)) .- 1  # Element-wise loss
+    total_fitness = -sum(loss_matrix)  # Accumulate total loss
+
+    # Penalize non-zero elements in W
+    # nnz_W = count(!iszero, W)
+    # if nnz_W > nnz_value
+    #     total_fitness -= 1000 * (nnz_W - nnz_value)
+    # end
+
+    # Normalize fitness
     total_fitness /= (trials * time_steps_per_trial * N)
 
     # Update fitness in the chromosome struct
     chromosome.fitness = total_fitness
 end
+
+# function evaluate_fitness_exponential!(chromosome::Chromosome; X_obs = re, nnz_value = 16,
+#                                         time_steps_per_trial = 11, trials = 5, k_exp = 2)
+#     # Extract chromosome parameters
+#     α = chromosome.α
+#     X_steady = chromosome.X_steady
+#     W = chromosome.W
+#     N = length(α)  # Number of genes
+
+#     # Initialize fitness
+#     total_fitness = 0.0
+
+#     # Loop over trials
+#     for trial in 1:trials
+#         # Extract trial-specific data
+#         trial_start = (trial - 1) * time_steps_per_trial + 1
+#         trial_end = trial * time_steps_per_trial
+#         X_trial = X_obs[trial_start:trial_end, :]
+
+#         # Loop over time steps and genes within this trial
+#         for t in 1:(time_steps_per_trial - 1)
+#             for j in 1:N
+#                 # Predicted next state for gene j
+#                 regulation_effect = sum(W[:, j] .* X_trial[t, :])
+#                 X_pred = X_trial[t, j] + α[j] * (X_steady[j] - X_trial[t, j]) + regulation_effect
+
+#                 # Exponential weighting loss
+#                 loss = exp(k_exp * abs(X_trial[t+1, j] - X_pred)) - 1
+#                 total_fitness -= loss
+#             end
+#         end
+#     end
+
+#     # Calculate number of non-zero elements in W
+#     nnz_W = count(!iszero, W)
+
+#     # Apply penalty based on nnz(W)
+#     if nnz_W > nnz_value
+#         total_fitness -= 1000 * (nnz_W - nnz_value)  # Severe penalty
+#     end
+
+#     # Normalize by the number of genes and time steps
+#     total_fitness /= (trials * time_steps_per_trial * N)
+
+#     # Update fitness in the chromosome struct
+#     chromosome.fitness = total_fitness
+# end
 
 function evaluate_population_exponential!(population::Vector{Chromosome}; X_obs = re, nnz_value = nnz_value,
                                            time_steps_per_trial = 11, trials = 5, k_exp = 2)
@@ -445,33 +445,49 @@ end
 
 
 
-
-function predict_time_series(chromosome::Chromosome, X_input::Matrix{Float64})
+function predict_time_series(chromosome::Chromosome, re::Array{Float64, 3})
     """
     Predict the next states for a time series using a chromosome.
     
     Args:
         chromosome::Chromosome: The chromosome containing the state transition function.
-        X_input::Matrix{Float64}: Previous states (time steps × genes).
+        re::Array{Float64, 3}: Input data (time steps × trials × genes).
     
     Returns:
-        Matrix{Float64}: Predicted states for the next time steps (time steps - 1 × genes).
+        Array{Float64, 3}: Predicted states (time steps - 1 × trials × genes).
     """
-    T, N = size(X_input)  # Time steps and number of genes
-    X_pred = zeros(T, N)  # Predictions for T-1 steps (t+1 states)
+    T, trials, N = size(re)  # Dimensions: time steps × trials × genes
 
-    for t in 1:T
-        for j in 1:N
-            # Regulation effect from all genes regulating gene j
-            regulation_effect = sum(chromosome.W[:, j] .* X_input[t, :])
-
-            # Compute the predicted state for gene j
-            X_pred[t, j] = X_input[t, j] + chromosome.α[j] * (chromosome.X_steady[j] - X_input[t, j]) + regulation_effect
-        end
+    # Precompute (I - W)
+    I_minus_W = I - chromosome.W
+    if rank(I_minus_W) < N
+        error("Matrix (I - W) is singular and cannot be inverted.")
     end
+
+    # Extract current states (all except the last time step)
+    X_current = re[1:end-1, :, :]  # Shape: (T-1) × trials × genes
+
+    # Reshape for batch matrix operations
+    X_current_flat = reshape(X_current, (T-1) * trials, N)'  # Shape: genes × ((T-1) * trials)
+
+    # Compute regulation term
+    regulation_term_flat = (I_minus_W) \ X_current_flat  # Shape: genes × ((T-1) * trials)
+
+    # Reshape back to 3D
+    regulation_term = reshape(regulation_term_flat', (T-1, trials, N))
+
+    # Add self-regulation and steady-state correction
+    # Reshape α and X_steady to broadcast correctly across trials and time steps
+    α_expanded = reshape(chromosome.α, (1, 1, N))  # Shape: 1 × 1 × genes
+    X_steady_expanded = reshape(chromosome.X_steady, (1, 1, N))  # Shape: 1 × 1 × genes
+    α_correction = α_expanded .* (X_steady_expanded .- X_current)  # Correction term
+
+    # Compute final predicted states
+    X_pred = X_current + α_correction + regulation_term  # Predicted states
 
     return X_pred
 end
+
 
 
 function evaluate_prediction_error(X_obs::Matrix{Float64}, X_pred::Matrix{Float64})
@@ -494,10 +510,15 @@ function evaluate_prediction_error(X_obs::Matrix{Float64}, X_pred::Matrix{Float6
 end
 
 
-best_solution, final_population = evolutionary_algorithm(20, 100)
+# best_solution, final_population = evolutionary_algorithm(400, 1000)
 # W = best_solution.W
-final_population[1]
-println()
+# final_population[1]
+g = 4
+z = predict_time_series(best_solution, re)
+plot(z[:,1,g])
+plot!(re[2:end,1,g])
+best_solution.X_steady
+
 # best_solution.fitness
 
 # s, k = evolutionary_algorithm(1000, 100)
