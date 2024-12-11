@@ -42,9 +42,17 @@ ss = vcat(wt, ts[1:21:end,:], ko)
 
 avgwt = vec(median(ss, dims = 1))
 
-z = 6
-p = plot(re[:,z], ylims = [0, 1], linestyle = :dash)
-scatter!(1:11:55, [re[1:11:end,z]])
-hline!(avgwt[z:z])
-display(p)
+z = 1
 re = reshape(re, (11, 5, N))
+p = plot(re[:,1,z], ylims = [0, 1], linestyle = :dash, lw = 4, label = "time series data ")
+hline!(avgwt[z:z], lw = 4, label = "average steady_states")
+xlabel!("time")
+ylabel!("gene strength")
+display(p)
+
+# savefig("figs/time_series_g1_perturbed.png")
+
+heatmap(Int.(gs), color = [:black, :green])
+xlabel!("gene counter")
+ylabel!("gene counter")
+# savefig("figs/heatmap_gs_d4_t1.png")
