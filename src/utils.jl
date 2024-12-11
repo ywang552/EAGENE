@@ -133,6 +133,49 @@ function mutate_chromosome!(chromosome::Chromosome, mutation_rate::Float64)
     end
 end
 
+# function evaluate_fitness_exponential!(chromosome::Chromosome; re = re, nnz_value = 16, 
+#                                         time_steps_per_trial = 11, trials = 5, k_exp = 2)
+#     # Extract chromosome parameters
+#     α = chromosome.α
+#     X_steady = chromosome.X_steady
+#     W = chromosome.W
+#     N = length(α)  # Number of genes
+
+#     # Precompute (I - W)
+#     I_minus_W = Matrix{Float64}(I, size(W)) - W
+#     if rank(I_minus_W) < N
+#         error("Matrix (I - W) is singular and cannot be inverted.")
+#     end
+
+#     # Precomputed reshaped matrix (re = X_obs_reshaped)
+#     X_obs_reshaped = re  # Already reshaped during preprocessing
+#     X_current = X_obs_reshaped[1:end-1, :, :]  # Current state X_t
+
+#     # Compute predictions for all time steps and trials
+#     regulation_term = (I_minus_W) \ reshape(X_current, (N, :))  # Compute in batch
+#     regulation_term = reshape(regulation_term, size(X_current))  # Reshape back to 3D
+
+#     # Add self-regulation and steady-state correction
+#     α_correction = α .* (X_steady .- X_current)  # Broadcasting α term
+#     X_pred = X_current + α_correction + regulation_term  # Predicted next state
+
+#     # Compute fitness loss for all genes, time steps, and trials
+#     X_next = X_obs_reshaped[2:end, :, :]  # Observed next state X_t+1
+#     loss_matrix = exp.(k_exp .* abs.(X_next .- X_pred)) .- 1  # Element-wise loss
+#     total_fitness = -sum(loss_matrix)  # Accumulate total loss
+
+#     # Penalize non-zero elements in W
+#     nnz_W = count(!iszero, W)
+#     if nnz_W > nnz_value
+#         total_fitness -= 1000 * (nnz_W - nnz_value)
+#     end
+
+#     # Normalize fitness
+#     total_fitness /= (trials * time_steps_per_trial * N)
+
+#     # Update fitness in the chromosome struct
+#     chromosome.fitness = total_fitness
+# end
 
 function evaluate_fitness_exponential!(chromosome::Chromosome; X_obs = re, nnz_value = 16,
                                         time_steps_per_trial = 11, trials = 5, k_exp = 2)
@@ -181,6 +224,14 @@ function evaluate_fitness_exponential!(chromosome::Chromosome; X_obs = re, nnz_v
     chromosome.fitness = total_fitness
 end
 
+function evaluate_population_exponential!(population::Vector{Chromosome}; X_obs = re, nnz_value = nnz_value,
+                                           time_steps_per_trial = 11, trials = 5, k_exp = 2)
+    for chromosome in population
+        evaluate_fitness_exponential!(chromosome)
+    end
+end
+
+
 function visualize_fitness_history(fitness_history)
     generations = 1:length(fitness_history[:best])
     p = plot(
@@ -198,20 +249,14 @@ function visualize_fitness_history(fitness_history)
         xscale = :log10, 
         fitness_history[:average],
         linewidth=2,
-        linestyle=:dash
+        linestyle=:dash,
+        ylim = [-10, 0]
     )
     p
 end
 
 
-function evaluate_population_exponential!(population::Vector{Chromosome}; X_obs = re, nnz_value = nnz_value,
-                                           time_steps_per_trial = 11, trials = 5, k_exp = 2)
-    for chromosome in population
-        evaluate_fitness_exponential!(chromosome, X_obs = X_obs,  nnz_value = nnz_value,
-                                       time_steps_per_trial = time_steps_per_trial, 
-                                       trials = trials, k_exp = k_exp)
-    end
-end
+
 
 function recombine_chromosomes(parent1::Chromosome, parent2::Chromosome, generation::Int, crossover_rate::Float64 = 0.3)
     @assert 0.0 <= crossover_rate <= 1.0 "Crossover rate must be between 0 and 1"
@@ -449,16 +494,11 @@ function evaluate_prediction_error(X_obs::Matrix{Float64}, X_pred::Matrix{Float6
 end
 
 
-best_solution, final_population = evolutionary_algorithm(100, 5000)
-
-
-
-
-
-
-
-
-
+best_solution, final_population = evolutionary_algorithm(20, 100)
+# W = best_solution.W
+final_population[1]
+println()
+# best_solution.fitness
 
 # s, k = evolutionary_algorithm(1000, 100)
 

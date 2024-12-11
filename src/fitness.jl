@@ -43,3 +43,5 @@ p = plot(re[:,z], ylims = [0, 1], linestyle = :dash)
 scatter!(1:11:55, [re[1:11:end,z]])
 hline!(avgwt[z:z])
 display(p)
+re
+# re = reshape(re, (11, 5, N))
