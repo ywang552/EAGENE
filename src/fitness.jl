@@ -2,6 +2,9 @@ using CSV, DataFrames
 using SparseArrays, StatsBase
 using Plots
 
+N = 10
+nnz_value = 50
+
 
 path = raw"E:\bioinformatics\DREAM4 in silico challenge\DREAM4 in-silico challenge\Size 10\DREAM4 gold standards"
 gst = CSV.read(joinpath(path, "insilico_size10_1_goldstandard.tsv"), DataFrame; delim='\t', header = false)
