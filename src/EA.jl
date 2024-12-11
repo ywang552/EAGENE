@@ -3,6 +3,8 @@ using DataFrames
 using SparseArrays, StatsBase
 using Plots
 a, b = "d4", 1
+N = 10
+nnz_value = 50
 fp = joinpath("data", "small")
 
 fn = "$(a)_$(b)_wt.tsv"
@@ -45,5 +47,4 @@ p = plot(re[:,z], ylims = [0, 1], linestyle = :dash)
 scatter!(1:11:55, [re[1:11:end,z]])
 hline!(avgwt[z:z])
 display(p)
-
-gs[:,4]
+re = reshape(re, (11, 5, N))
