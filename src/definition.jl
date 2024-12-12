@@ -45,3 +45,51 @@ function evaluate_fitness_exponential!(chromosome::Chromosome; X_obs = re, nnz_v
     # Update fitness in the chromosome struct
     chromosome.fitness = total_fitness
 end
+
+
+function crowding_distance_assignment(front::Vector{Chromosome})
+    num_individuals = length(front)
+    distances = zeros(Float64, num_individuals)
+
+    # Sort by each objective
+    objectives = [:fitness, :sparsity]
+    for obj in objectives
+        # Sort individuals by the current objective
+        sorted_indices = sortperm([getfield(front[i], obj) for i in 1:num_individuals])
+
+        # Boundary points get infinite distance
+        distances[sorted_indices[1]] = Inf
+        distances[sorted_indices[end]] = Inf
+
+        # Compute normalized distances for interior points
+        obj_min = getfield(front[sorted_indices[1]], obj)
+        obj_max = getfield(front[sorted_indices[end]], obj)
+
+        if obj_max != obj_min
+            for k in 2:(num_individuals - 1)
+                numerator = getfield(front[sorted_indices[k + 1]], obj) -
+                            getfield(front[sorted_indices[k - 1]], obj)
+                denominator = obj_max - obj_min
+
+                # Handle potential Inf/Inf or NaN
+                if isinf(numerator) && isinf(denominator)
+                    distances[sorted_indices[k]] += 0.0  # Assign default contribution
+                elseif isnan(numerator / denominator)
+                    distances[sorted_indices[k]] += 0.0
+                else
+                    distances[sorted_indices[k]] += numerator / denominator
+                end
+            end
+        else
+            # No variation in this objective, assign 0 contribution for all interior points
+            for k in 2:(num_individuals - 1)
+                distances[sorted_indices[k]] += 0.0
+            end
+        end
+    end
+
+    # Add distances to the individuals
+    for i in 1:num_individuals
+        front[i].distance = distances[i]
+    end
+end

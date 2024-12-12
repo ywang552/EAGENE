@@ -6,6 +6,31 @@ using LinearAlgebra
 using MultivariateStats
 
 
+mutable struct Chromosome
+    α::Vector{Float64}        # Self-regulation values
+    X_steady::Vector{Float64} # Steady-state values
+    W::SparseMatrixCSC{Float64, Int} # Gene regulation matrix
+    fitness::Float64          # Primary fitness score (e.g., prediction error)
+    parents::Tuple{Int, Int}  # Indices of parents (-1, -1 for initial population)
+    generation::Int           # The generation this chromosome belongs to
+    id::Int                   # Unique ID for the chromosome
+    sparsity::Float16             # Number of non-zero elements in W (secondary objective)
+    distance::Float64
+end
+
+import Base: isless
+function isless(c1::Chromosome, c2::Chromosome)
+    # Compare based on crowding distance (higher is better)
+    # if c1.crowding_distance != c2.crowding_distance
+    #     return c1.crowding_distance < c2.crowding_distance
+    # end
+
+    # Fallback comparison (e.g., based on fitness if distances are equal)
+    # Assuming fitness is maximized (higher is better)
+    return c1.fitness < c2.fitness
+end
+
+
 
 const CHROMOSOME_ID_COUNTER = Ref(0)  # A mutable counter
 
@@ -21,16 +46,6 @@ function track_fitness(population, fitness_history)
     push!(fitness_history[:average], avg_fitness)
 end
 
-mutable struct Chromosome
-    α::Vector{Float64}        # Self-regulation values
-    X_steady::Vector{Float64} # Steady-state values
-    W::SparseMatrixCSC{Float64, Int} # Gene regulation matrix
-    fitness::Float64          # Primary fitness score (e.g., prediction error)
-    parents::Tuple{Int, Int}  # Indices of parents (-1, -1 for initial population)
-    generation::Int           # The generation this chromosome belongs to
-    id::Int                   # Unique ID for the chromosome
-    sparsity::Int             # Number of non-zero elements in W (secondary objective)
-end
 
 
 
@@ -44,11 +59,6 @@ function show(io::IO, chromosome::Chromosome)
     println(io, "  W (Non-zero elements in Sparse Matrix): ", nnz(chromosome.W))
 
 end
-
-
-
-
-
 
 function decode_chromosome(chromosome, N)
     # Extract parameters
@@ -99,7 +109,7 @@ function initialize_population(pop_size, N, nnz_value)
         generation = 0
         id = get_next_id()
         sparsity = nnz(W)
-        push!(population, Chromosome(α, X_steady, W, fitness, parents, generation, id, sparsity))
+        push!(population, Chromosome(α, X_steady, W, fitness, parents, generation, id, sparsity, 0))
     end
     return population
 end
@@ -131,8 +141,8 @@ function mutate_chromosome!(chromosome::Chromosome, mutation_rate::Float64)
     end
 end
 
-function evaluate_fitness_exponential!(chromosome::Chromosome; re = re, nnz_value = 16, 
-                                        time_steps_per_trial = 11, trials = 5, k_exp = 2)
+
+function evaluate_fitness_exponential!(chromosome::Chromosome; re = re, time_steps_per_trial = 11, trials = 5, k_exp = 0.5)
     # Extract chromosome parameters
     α = chromosome.α
     X_steady = chromosome.X_steady
@@ -140,57 +150,61 @@ function evaluate_fitness_exponential!(chromosome::Chromosome; re = re, nnz_valu
     N = length(α)  # Number of genes
 
     # Precompute (I - W)
-    I_minus_W = Matrix{Float64}(I, size(W)) - W
-    if rank(I_minus_W) < N
-        error("Matrix (I - W) is singular and cannot be inverted.")
-    end
+    I_minus_W = I - W
 
-    # Precomputed reshaped matrix (re = X_obs_reshaped)
+    # Precomputed reshaped matrix
     X_obs_reshaped = re  # Already reshaped during preprocessing
     X_current = X_obs_reshaped[1:end-1, :, :]  # Current state X_t
+    X_next = X_obs_reshaped[2:end, :, :]      # Observed next state X_t+1
 
     # Compute predictions for all time steps and trials
-    regulation_term = (I_minus_W) \ reshape(X_current, (N, :))  # Compute in batch
+    # regulation_term = (W) * reshape(X_current, (N, :))  # Compute in batch
+    # regulation_term = reshape(regulation_term, size(X_current))  # Reshape back to 3D
+    regulation_term =  I_minus_W \ reshape(X_current, (N, :))
     regulation_term = reshape(regulation_term, size(X_current))  # Reshape back to 3D
 
     # Add self-regulation and steady-state correction
     α_correction = α .* (X_steady .- X_current)  # Broadcasting α term
     X_pred = X_current + α_correction + regulation_term  # Predicted next state
 
-    # Compute fitness loss for all genes, time steps, and trials
-    X_next = X_obs_reshaped[2:end, :, :]  # Observed next state X_t+1
-    loss_matrix = exp.(k_exp .* abs.(X_next .- X_pred)) .- 1  # Element-wise loss
-    total_fitness = -sum(loss_matrix)  # Accumulate total loss
-
-    # Penalize non-zero elements in W
-    nnz_W = count(!iszero, W)
-    if nnz_W > nnz_value
-        total_fitness -= 1000 * (nnz_W - nnz_value)
+    # Compute RMSD loss
+    rmsd_normalizer = maximum(abs.(X_next)) - minimum(abs.(X_next))
+    if rmsd_normalizer > 0
+        loss_matrix = rmsd(X_pred, X_next) / rmsd_normalizer
+    else
+        loss_matrix = rmsd(X_pred, X_next)  # Fallback if range is 0
     end
+    # Total fitness is negative RMSD (to maximize accuracy)
+    total_fitness = loss_matrix
 
-    # Normalize fitness
-    total_fitness /= (trials * time_steps_per_trial * N)
+    steady_state_penalty = 0.1 * sum((chromosome.X_steady .- avgwt).^2)
 
-    # Update fitness in the chromosome struct
-    chromosome.fitness = total_fitness
+    # Add penalty for extreme alpha values
+    alpha_penalty = 0.1 * sum((chromosome.α .- 0.1).^2)
+
+    # Total fitness
+    chromosome.fitness = -(total_fitness + steady_state_penalty + alpha_penalty)
 end
 
-function evaluate_fitness_multiobjective!(chromosome::Chromosome; X_obs = re, nnz_value = 16,
-                                          time_steps_per_trial = 11, trials = 5, k_exp = 2)
-    # Use existing function to calculate prediction error
-    evaluate_fitness_exponential!(chromosome;)
+avgwt
+println("α: $(p.α), X_steady: $(p.X_steady), ground truth X_steady: $(avgwt)")
+p.X_steady
 
-    # Prediction error is already stored in chromosome.fitness
-    prediction_error = chromosome.fitness
 
-    # Calculate sparsity as the number of non-zero elements in W
-    sparsity = count(!iszero, chromosome.W)
+function evaluate_fitness_multiobjective!(chromosome::Chromosome; 
+                                          re = re, time_steps_per_trial = 11, trials = 5, k_exp = 2,
+                                          sparsity_epsilon = 1e-6)
+    # Compute prediction error
+    evaluate_fitness_exponential!(chromosome; re = re, time_steps_per_trial = time_steps_per_trial, trials = trials, k_exp = k_exp)
 
-    # Store sparsity as an additional objective
-    chromosome.sparsity = sparsity
+    # Compute and normalize sparsity
+    sparsity = compute_sparsity(chromosome.W, sparsity_epsilon)
+    sparsity /= prod(size(chromosome.W))  # Normalize by total elements in W
+
+    # Update objectives
+    chromosome.fitness = chromosome.fitness  # Prediction accuracy
+    chromosome.sparsity = 1 * sparsity  # Smooth sparsity
 end
-
-
 
 function evaluate_population_exponential!(population::Vector{Chromosome}; X_obs = re, nnz_value = nnz_value,
                                            time_steps_per_trial = 11, trials = 5, k_exp = 2)
@@ -198,7 +212,6 @@ function evaluate_population_exponential!(population::Vector{Chromosome}; X_obs 
         evaluate_fitness_multiobjective!(chromosome)
     end
 end
-
 
 function visualize_fitness_history(fitness_history)
     generations = 1:length(fitness_history[:best])
@@ -218,28 +231,28 @@ function visualize_fitness_history(fitness_history)
         fitness_history[:average],
         linewidth=2,
         linestyle=:dash,
-        ylim = [-10, 0]
     )
     p
 end
 
-
-
-
-function recombine_chromosomes(parent1::Chromosome, parent2::Chromosome, generation::Int, crossover_rate::Float64 = 0.3)
-    @assert 0.0 <= crossover_rate <= 1.0 "Crossover rate must be between 0 and 1"
-
+function recombine_chromosomes_with_exploration(parent1::Chromosome, parent2::Chromosome, generation::Int, crossover_rate::Float64 = 0.5, mutation_rate::Float64 = 0.1)
     N = length(parent1.α)  # Number of genes
 
-    # Blend α (self-regulation values)
-    α_offspring = (rand(N) .< crossover_rate) .* parent1.α .+ 
-                  (rand(N) .>= crossover_rate) .* parent2.α
+    # Weighted average for α with noise
+    # blend_ratio = rand()
+    # α_offspring = blend_ratio .* parent1.α .+ (1.0 - blend_ratio) .* parent2.α
+    # α_offspring += 0.05 .* randn(N)  # Add Gaussian noise
+    # α_offspring = clamp.(α_offspring, 0.01, 1.0)
+    
+    # # Weighted average for X_steady with noise
+    # X_steady_offspring = blend_ratio .* parent1.X_steady .+ (1.0 - blend_ratio) .* parent2.X_steady
+    # X_steady_offspring += 0.05 .* randn(N)  # Add Gaussian noise
+    # X_steady_offspring = clamp.(X_steady_offspring, 0.0, 1.0)
 
-    # Blend X_steady (steady-state values)
-    X_steady_offspring = (rand(N) .< crossover_rate) .* parent1.X_steady .+ 
-                         (rand(N) .>= crossover_rate) .* parent2.X_steady
+    α_offspring = 0.5 .* (parent1.α .+ parent2.α)
+    X_steady_offspring = 0.5 .* (parent1.X_steady .+ parent2.X_steady)
 
-    # Sparse matrix crossover for W (gene regulation matrix)
+
     W_offspring = spzeros(N, N)
     for i in 1:N
         if rand() < crossover_rate
@@ -249,38 +262,24 @@ function recombine_chromosomes(parent1::Chromosome, parent2::Chromosome, generat
         end
     end
 
-    # Create the offspring chromosome
+    # Create offspring
     offspring = Chromosome(
         α_offspring,
         X_steady_offspring,
         W_offspring,
-        -Inf,  # Fitness not evaluated yet
-        (parent1.id, parent2.id),  # Track parent IDs
-        generation,  # Current generation
-        get_next_id(),  # Assign unique ID to the offspring
-        nnz(W_offspring)
+        -1,  # Fitness not evaluated yet
+        (parent1.id, parent2.id),
+        generation,
+        get_next_id(),
+        nnz(W_offspring),
+        0
     )
 
     return offspring
 end
 
-function pareto_front_selection(population::Vector{Chromosome})
-    pareto_front = Chromosome[]
-    for candidate in population
-        dominated = false
-        for competitor in population
-            if competitor.fitness <= candidate.fitness && competitor.sparsity <= candidate.sparsity &&
-               (competitor.fitness < candidate.fitness || competitor.sparsity < candidate.sparsity)
-                dominated = true
-                break
-            end
-        end
-        if !dominated
-            push!(pareto_front, candidate)
-        end
-    end
-    return pareto_front
-end
+
+
 
 
 function sample_distinct_parents(parents::Vector{Chromosome})
@@ -357,174 +356,6 @@ function compute_top_fraction_variance(explained_variance, m)
 end
 
 
-# function evolutionary_algorithm(
-#     population_size, generations;
-#     X_obs = re, N = N, nnz_value = nnz_value, crossover_rate=0.7, mutation_rate=0.1,
-#     time_steps_per_trial=11, trials=5, k_exp=2.0, pc = 50
-# )
-#     println("Starting...")
-#     # Initialize the population
-#     population = initialize_population(population_size, N, nnz_value)
-
-#     entropy_history = []
-#     fitness_history = Dict(:best => Float64[], :average => Float64[])
-
-#     # try
-#         for gen in 1:generations
-#             pca_model, explained_variance, cumulative_variance, num_components_95 = calculate_pca_diversity(population)
-#             push!(entropy_history, compute_top_fraction_variance(explained_variance, maximum([3, div(length(explained_variance), 10)])))
-
-#             # Step 1: Evaluate fitness for the population
-#             evaluate_population_exponential!(population; )
-
-#             # Track fitness
-#             track_fitness(population, fitness_history)
-
-#             # Sort population by fitness (descending order)
-#             population = sort(population, by=c -> c.fitness, rev=true)
-
-#             # Print the best fitness
-#             if gen % pc == 0
-#                 println("Generation $gen")
-#                 println("Best fitness: ", population[1].fitness)
-#             end 
-
-#             # Step 2: Selection - Retain the top half of the population
-#             num_parents = div(population_size, 2)
-#             parents = population[1:num_parents]
-
-#             # Step 3: Recombination - Generate offspring
-#             offspring = Chromosome[]
-#             for _ in 1:(population_size - num_parents)
-#                 parent1, parent2 = sample_distinct_parents(parents)
-#                 child = recombine_chromosomes(parent1, parent2, gen)
-#                 push!(offspring, child)
-#             end
-
-#             # Step 4: Mutation - Apply mutation to offspring
-#             for child in offspring
-#                 mutate_chromosome!(child, mutation_rate)
-#                 check_and_fix_chromosome!(child)
-#             end
-
-#             # Replace the population with parents and offspring
-#             population = vcat(parents, offspring)
-
-#             # Visualization
-#             if gen % pc == 0
-#                 p1 = plot(1:length(entropy_history), xscale=:log10, label=false, entropy_history,
-#                           xlabel="Generation", ylabel="Similarity", title="Population Similarity Over Time")
-#                 p2 = visualize_fitness_history(fitness_history)
-#                 display(plot(p1, p2, layout=(2, 1)))
-#             end
-#         end
-#     # catch e 
-#     #     # println("Error occurred in Generation $gen:")
-#     #     println("Error Details: ", e)
-#     #     # println(stacktrace(e))
-#     #     throw(e)  # Rethrow the error after logging
-#     # finally
-#     #     evaluate_population_exponential!(population; )
-
-#         # Always return the current population and all_chromosomes
-#         return population[1], population
-#     # end
-# end
-
-function plot_pareto_front(pareto_front::Vector{Chromosome})
-    errors = [chromosome.fitness for chromosome in pareto_front]
-    sparsities = [chromosome.sparsity for chromosome in pareto_front]
-
-    scatter(sparsities, errors, xlabel="Sparsity (nnz)", ylabel="Prediction Error",
-            title="Pareto Front: Sparsity vs. Prediction Error")
-end
-
-
-function evolutionary_algorithm(
-    population_size, generations;
-    X_obs = re, N = N, nnz_value = nnz_value, crossover_rate=0.7, mutation_rate=0.1,
-    time_steps_per_trial=11, trials=5, k_exp=2.0, pc = 50
-)
-    println("Starting...")
-
-    # Initialize the population
-    population = initialize_population(population_size, N, nnz_value)
-
-    entropy_history = []
-    fitness_history = Dict(:best => Float64[], :average => Float64[])
-    pareto_front_history = []
-
-    for gen in 1:generations
-        # Calculate PCA diversity
-        pca_model, explained_variance, cumulative_variance, num_components_95 = calculate_pca_diversity(population)
-        push!(entropy_history, compute_top_fraction_variance(explained_variance, maximum([3, div(length(explained_variance), 10)])))
-
-        # Step 1: Evaluate multi-objective fitness for the population
-        for chromosome in population
-            evaluate_fitness_multiobjective!(chromosome, 
-                                             X_obs=X_obs, 
-                                             nnz_value=nnz_value, 
-                                             time_steps_per_trial=time_steps_per_trial, 
-                                             trials=trials, 
-                                             k_exp=k_exp)
-        end
-
-        # Track fitness
-        track_fitness(population, fitness_history)
-
-        # Pareto front selection
-        pareto_front = pareto_front_selection(population)
-        push!(pareto_front_history, pareto_front)
-
-        # Sort population by fitness (descending order for visualization purposes)
-        population = sort(population, by=c -> c.fitness, rev=true)
-
-        # Print the best fitness
-        if gen % pc == 0
-            println("Generation $gen")
-            println("Best fitness: ", population[1].fitness)
-        end 
-
-        # Step 2: Selection - Retain the top half of the population
-        num_parents = div(population_size, 2)
-        parents = population[1:num_parents]
-
-        # Step 3: Recombination - Generate offspring
-        offspring = Chromosome[]
-        for _ in 1:(population_size - num_parents)
-            parent1, parent2 = sample_distinct_parents(parents)
-            child = recombine_chromosomes(parent1, parent2, gen)
-            push!(offspring, child)
-        end
-
-        # Step 4: Mutation - Apply mutation to offspring
-        for child in offspring
-            mutate_chromosome!(child, mutation_rate)
-            check_and_fix_chromosome!(child)
-        end
-
-        # Replace the population with parents and offspring
-        population = vcat(parents, offspring)
-
-        # Visualization
-        if gen % pc == 0
-            # p1 = plot(1:length(entropy_history), xscale=:log10, label=false, entropy_history,
-            #           xlabel="Generation", ylabel="Similarity", title="Population Similarity Over Time")
-            # p2 = visualize_fitness_history(fitness_history)
-            p3 = plot_pareto_front(pareto_front)
-            display(p3)
-            # display(plot(p1, p2, p3, layout=(3, 1), dpi = 6000))
-        end
-    end
-
-    # Return the best chromosome, the entire population, and Pareto fronts
-    return population[1], population, pareto_front_history
-end
-
-
-
-
-
 
 function predict_time_series(chromosome::Chromosome, re::Array{Float64, 3})
     """
@@ -590,10 +421,290 @@ function evaluate_prediction_error(X_obs::Matrix{Float64}, X_pred::Matrix{Float6
     return Dict("MSE" => mse, "MAE" => mae, "RMSE" => rmse)
 end
 
+function non_dominated_sorting(population::Vector{Chromosome})
+    # Initialize domination data
+    domination_count = Dict{Chromosome, Int}()         # Number of solutions dominating each chromosome
+    dominated_solutions = Dict{Chromosome, Set{Chromosome}}()  # Solutions dominated by each chromosome
+    fronts = Vector{Vector{Chromosome}}()
 
-best_solution, final_population, ph = evolutionary_algorithm(400, 1000, pc = 20)
+    for chrom in population
+        domination_count[chrom] = 0
+        dominated_solutions[chrom] = Set{Chromosome}()
+    end
+
+    # Calculate domination relationships
+    tolerance = 1e-6  # To handle precision issues
+    for chrom1 in population
+        for chrom2 in population
+            if chrom1 != chrom2
+                # Compare objectives with tolerance
+                better_in_all = (chrom1.fitness + tolerance >= chrom2.fitness) &&
+                                (chrom1.sparsity + tolerance <= chrom2.sparsity)
+                strictly_better_in_at_least_one = (chrom1.fitness + tolerance > chrom2.fitness) ||
+                                                  (chrom1.sparsity + tolerance < chrom2.sparsity)
+
+                # Debugging output
+                # println("Comparing Chromosome 1 (Fitness: $(chrom1.fitness), Sparsity: $(chrom1.sparsity))")
+                # println("         with Chromosome 2 (Fitness: $(chrom2.fitness), Sparsity: $(chrom2.sparsity))")
+                # println("Better in all: $better_in_all, Strictly better in at least one: $strictly_better_in_at_least_one")
+
+                if better_in_all && strictly_better_in_at_least_one
+                    push!(dominated_solutions[chrom1], chrom2)
+                elseif (chrom2.fitness + tolerance >= chrom1.fitness) &&
+                       (chrom2.sparsity + tolerance <= chrom1.sparsity) &&
+                       ((chrom2.fitness + tolerance > chrom1.fitness) || 
+                        (chrom2.sparsity + tolerance < chrom1.sparsity))
+                    domination_count[chrom1] += 1
+                end
+            end
+        end
+    end
+
+    # Assign to Pareto fronts
+    current_front = Vector{Chromosome}()
+    for chrom in population
+        if domination_count[chrom] == 0
+            push!(current_front, chrom)
+        end
+    end
+
+    while !isempty(current_front)
+        push!(fronts, current_front)
+        next_front = Vector{Chromosome}()
+        for chrom in current_front
+            for dominated_chrom in dominated_solutions[chrom]
+                domination_count[dominated_chrom] -= 1
+                if domination_count[dominated_chrom] == 0
+                    push!(next_front, dominated_chrom)
+                end
+            end
+        end
+        current_front = next_front
+    end
+
+    return fronts
+end
 
 
 
-plot(predict_time_series(best_solution, re)[:,1,1])
-plot!(re[2:end,1,1])
+function crowding_distance_assignment(front::Vector{Chromosome})
+    num_individuals = length(front)
+    
+    # Handle edge case: small fronts
+    if num_individuals <= 2
+        # Assign infinite distance to all individuals
+        for chrom in front
+            chrom.distance = Inf
+        end
+        return
+    end
+
+    distances = zeros(Float64, num_individuals)
+    objectives = [:fitness, :sparsity]
+
+    # Sort by each objective
+    for obj in objectives
+        # Sort individuals by the current objective
+        sorted_indices = sortperm([getfield(front[i], obj) for i in 1:num_individuals])
+
+        # Boundary points get infinite distance
+        distances[sorted_indices[1]] = Inf
+        distances[sorted_indices[end]] = Inf
+
+        # Compute distances for interior points
+        obj_min = getfield(front[sorted_indices[1]], obj)
+        obj_max = getfield(front[sorted_indices[end]], obj)
+
+        if obj_max != obj_min
+            for k in 2:(num_individuals - 1)
+                numerator = getfield(front[sorted_indices[k + 1]], obj) - getfield(front[sorted_indices[k - 1]], obj)
+                denominator = obj_max - obj_min
+                distances[sorted_indices[k]] += numerator / denominator
+            end 
+        end
+    end
+
+    # Assign distances to the individuals
+    for i in 1:num_individuals
+        front[i].distance = distances[i]
+    end
+end
+
+
+function compute_sparsity(W::SparseMatrixCSC{Float64, Int64}, ε::Float64 = 1e-6)
+    return sum(log.(1 .+ abs.(W) ./ ε))
+end
+
+
+using Plots
+
+function plot_pareto_fronts(fronts::Vector{Vector{Chromosome}})
+    # Prepare the plot
+    p = plot(title="Pareto Fronts", xlabel="Fitness (Objective 1)", ylabel="Sparsity (Objective 2)", legend=false)
+
+    # Assign unique colors to each Pareto front
+    for (i, front) in enumerate(fronts)
+        # Extract and sort points in the current Pareto front by fitness (Objective 1)
+        sorted_front = sort(front, by = c -> c.fitness)
+
+        # Get x and y values for the sorted front
+        x = [chrom.fitness for chrom in sorted_front]  # Objective 1: Fitness
+        y = [chrom.sparsity for chrom in sorted_front]  # Objective 2: Sparsity
+
+        # Plot the Pareto front as a line with markers
+        plot!(x, y, label="Front $i", marker=:circle, lw=2)
+    end
+
+    p
+end
+
+function normalize_objectives!(fronts::Vector{Vector{Chromosome}})
+    # Extract global ranges for fitness and sparsity
+    min_fitness = minimum([chrom.fitness for front in fronts for chrom in front])
+    max_fitness = maximum([chrom.fitness for front in fronts for chrom in front])
+    min_sparsity = minimum([chrom.sparsity for front in fronts for chrom in front])
+    max_sparsity = maximum([chrom.sparsity for front in fronts for chrom in front])
+
+    # Normalize each chromosome's objectives
+    for front in fronts
+        for chrom in front
+            chrom.fitness = (chrom.fitness - min_fitness) / (max_fitness - min_fitness + 1e-6)
+            chrom.sparsity = (chrom.sparsity - min_sparsity) / (max_sparsity - min_sparsity + 1e-6)
+        end
+    end
+end
+
+
+function nsga2(
+    population_size::Int, generations::Int;
+    X_obs=re, N=N, nnz_value=nnz_value, crossover_rate=0.7, mutation_rate=0.1,
+    time_steps_per_trial=11, trials=5, k_exp=2.0, pc=50
+)
+    println("Starting NSGA-II...")
+
+    # Step 1: Initialize Population
+    population = initialize_population(population_size, N, nnz_value)
+
+    # History Tracking
+    pareto_front_history = Vector{Vector{Chromosome}}()
+    fitness_history = Dict(:best => Float64[], :average => Float64[])
+
+    for gen in 1:generations
+        println("Generation $gen...")
+
+        # Step 2: Evaluate Fitness for All Individuals
+        for chromosome in population
+            evaluate_fitness_multiobjective!(chromosome)
+        end
+
+        # Step 3: Generate Offspring
+        offspring = Chromosome[]
+        for _ in 1:population_size
+            parent1, parent2 = sample_distinct_parents(population)
+            child = recombine_chromosomes_with_exploration(parent1, parent2, gen)
+            mutate_chromosome!(child, mutation_rate)
+            check_and_fix_chromosome!(child)
+            evaluate_fitness_multiobjective!(child)
+            push!(offspring, child)
+        end
+
+        # Step 4: Combine Parent and Offspring Populations
+        combined_population = vcat(population, offspring)
+
+        # Step 5: Perform Non-Dominated Sorting
+        fronts = non_dominated_sorting(combined_population)
+        # Step 6: Assign Crowding Distances
+        for front in fronts
+            crowding_distance_assignment(front)
+        end
+        p = fronts[1]
+        f = [x.fitness for x in p]
+        # Step 7: Environmental Selection
+        population = environmental_selection_simple(population_size, fronts)
+
+        # Step 8: Track and Store Pareto Front
+        @assert length(population) == population_size 
+
+        push!(pareto_front_history, fronts[1])  # Store the best front
+        # normalize_objectives!(fronts)
+        track_fitness(population, fitness_history)
+
+        # for (i, front) in enumerate(fronts)
+        #     println("Front $i:")
+        #     for chrom in front
+        #         println("  Fitness: $(chrom.fitness), Sparsity: $(chrom.sparsity)")
+        #     end
+        # end
+        
+
+        # Visualization Every `pc` Generations
+        if gen % pc == 0
+            println("Visualizing progress at generation $gen...")
+            p1 = (visualize_fitness_history(fitness_history))
+            p2 = plot_pareto_fronts(fronts)
+            display(plot(p1, p2))
+        end
+    end
+
+    println("NSGA-II completed.")
+    # Return final population and best Pareto front
+    return population, pareto_front_history
+end
+
+
+function select_from_last_front_simple(last_front::Vector{Chromosome}, remaining_slots::Int)
+    # Sort the front by crowding distance (descending), including Inf values
+    sorted_front = sort(last_front, by=c -> c.distance, rev=true)
+
+    # Select the top individuals up to the remaining slots
+    return sorted_front[1:remaining_slots]
+end
+
+function environmental_selection_simple(population_size::Int, fronts::Vector{Vector{Chromosome}})
+    new_population = Vector{Chromosome}()
+
+    for front in fronts
+        if length(new_population) + length(front) <= population_size
+            # Add the entire front if it fits
+            append!(new_population, front)
+        else
+            # If the front doesn’t fully fit, prioritize using crowding distance
+            remaining_slots = population_size - length(new_population)
+
+            # Sort the current front by crowding distance (descending)
+            sorted_front = sort(front, by = c -> c.distance, rev = true)
+
+            # Select the top individuals based on remaining slots
+            append!(new_population, sorted_front[1:remaining_slots])
+            break
+        end
+    end
+
+    return new_population
+end
+
+
+final_population, ph = nsga2(200, 500, pc = 1)
+
+
+Ws = [x.W for x in final_population]
+
+function find_kth_largest_sparse(matrix::SparseMatrixCSC{T}, k::Int) where T
+    # Extract nonzero elements from the sparse matrix
+    nonzeros = collect(matrix.nzval)  # `nzval` contains all nonzero values
+    
+    # Sort the nonzero elements in descending order
+    sorted_nonzeros = sort(nonzeros, rev=true)
+    
+    # Ensure k is valid
+    @assert k <= length(sorted_nonzeros) "k is larger than the number of nonzero elements"
+    
+    # Return the k-th largest element
+    return sorted_nonzeros[k]
+end
+sum(Ws[163].!=0)
+findmin([sum(x.!=0) for x in Ws])
+Ws[163].!=0 .&& gs.==0
+# prd = predict_time_series(final_population[k], re)
+# plot(prd[:,1,2])
+# plot!(re[2:end,1,2])
