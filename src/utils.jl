@@ -46,9 +46,6 @@ function track_fitness(population, fitness_history)
     push!(fitness_history[:average], avg_fitness)
 end
 
-
-
-
 function show(io::IO, chromosome::Chromosome)
     println(io, "  Chromosome ID: ", chromosome.id)
     println(io, "  Generation: ", chromosome.generation)
@@ -70,12 +67,21 @@ function decode_chromosome(chromosome, N)
     return α, X_steady, sparse(W)
 end
 
+function has_nonzero_diagonal_sparse(matrix::SparseMatrixCSC)
+    for i in 1:N
+        if matrix[i, i] == 0  # Check diagonal elements
+            return false
+        end
+    end
+    return true
+end
+
 function validate_chromosome(chromosome::Chromosome)
     # Check constraints
     is_valid_α = all(chromosome.α .>= 0)
     is_valid_X_steady = all((0 .< chromosome.X_steady) .& (chromosome.X_steady .< 1))
-
-    return is_valid_α && is_valid_X_steady
+    is_valid_W = !has_nonzero_diagonal_sparse(chromosome.W)
+    return is_valid_α && is_valid_X_steady && is_valid_W
 end
 
 
@@ -84,7 +90,13 @@ function repair_chromosome!(chromosome::Chromosome)
     chromosome.α .= max.(chromosome.α, 0.0)
 
     # Fix X_steady to satisfy 0 < X_steady < 1
-    chromosome.X_steady .= clamp.(chromosome.X_steady, 0.01, 0.99)
+    chromosome.X_steady .= avgwt
+    
+    if has_nonzero_diagonal_sparse(chromosome.W)
+        for i in 1:N
+            chromosome.W[i, i] = 0 
+        end
+    end 
 end
 
 
@@ -114,31 +126,48 @@ function initialize_population(pop_size, N, nnz_value)
     return population
 end
 
-function mutate_chromosome!(chromosome::Chromosome, mutation_rate::Float64)
+function mutate_chromosome(chromosome::Chromosome, generation::Int, total_generations::Int; 
+                           mutation_scale::Float64 = 0.1, sparsity_threshold::Float64 = 0.1)
     N = length(chromosome.α)
+    
+    # Dynamic mutation rate
+    mutation_rate = 0.5 + 0.5 * (1 - generation / total_generations)  # Higher rate early, lower later
+    
+    # Mutate α (self-regulation values)
+    α_mutated = chromosome.α + randn(N) * mutation_scale
+    α_mutated = clamp.(α_mutated, 0.0, 1.0)  # Keep within valid range
 
-    # Mutate α
-    for i in 1:N
-        if rand() < mutation_rate
-            chromosome.α[i] += 0.1 * randn()
-        end
-    end
+    # Mutate X_steady (steady-state values)
+    X_steady_mutated = chromosome.X_steady + randn(N) * mutation_scale
+    X_steady_mutated = clamp.(X_steady_mutated, 0.0, 1.0)  # Keep within valid range
 
-    # Mutate X_steady
-    for i in 1:N
-        if rand() < mutation_rate
-            chromosome.X_steady[i] += 0.1 * randn()
-        end
-    end
-
-    # Mutate W (sparse matrix)
+    # Mutate W (gene regulation matrix)
+    W_mutated = copy(chromosome.W)
     for i in 1:N
         for j in 1:N
-            if rand() < mutation_rate
-                chromosome.W[i, j] += 0.1 * randn()
+            if rand() < mutation_rate  # Apply mutation with dynamic rate
+                W_mutated[i, j] += randn() * mutation_scale
+                if rand() < sparsity_threshold  # Introduce sparsity
+                    W_mutated[i, j] = 0.0
+                end
             end
         end
     end
+    
+    # Create mutated chromosome
+    mutated_chromosome = Chromosome(
+        α_mutated,
+        X_steady_mutated,
+        W_mutated,
+        -Inf,  # Fitness not evaluated yet
+        (chromosome.id, chromosome.id),  # Track parent ID for lineage
+        generation,
+        get_next_id(),
+        nnz(W_mutated),
+        0
+    )
+
+    return mutated_chromosome
 end
 
 
@@ -186,9 +215,6 @@ function evaluate_fitness_exponential!(chromosome::Chromosome; re = re, time_ste
     chromosome.fitness = -(total_fitness + steady_state_penalty + alpha_penalty)
 end
 
-avgwt
-println("α: $(p.α), X_steady: $(p.X_steady), ground truth X_steady: $(avgwt)")
-p.X_steady
 
 
 function evaluate_fitness_multiobjective!(chromosome::Chromosome; 
@@ -239,18 +265,18 @@ function recombine_chromosomes_with_exploration(parent1::Chromosome, parent2::Ch
     N = length(parent1.α)  # Number of genes
 
     # Weighted average for α with noise
-    # blend_ratio = rand()
-    # α_offspring = blend_ratio .* parent1.α .+ (1.0 - blend_ratio) .* parent2.α
-    # α_offspring += 0.05 .* randn(N)  # Add Gaussian noise
-    # α_offspring = clamp.(α_offspring, 0.01, 1.0)
+    blend_ratio = rand()
+    α_offspring = blend_ratio .* parent1.α .+ (1.0 - blend_ratio) .* parent2.α
+    α_offspring += 0.05 .* randn(N)  # Add Gaussian noise
+    α_offspring = clamp.(α_offspring, 0.01, 1.0)
     
-    # # Weighted average for X_steady with noise
-    # X_steady_offspring = blend_ratio .* parent1.X_steady .+ (1.0 - blend_ratio) .* parent2.X_steady
-    # X_steady_offspring += 0.05 .* randn(N)  # Add Gaussian noise
-    # X_steady_offspring = clamp.(X_steady_offspring, 0.0, 1.0)
+    # Weighted average for X_steady with noise
+    X_steady_offspring = blend_ratio .* parent1.X_steady .+ (1.0 - blend_ratio) .* parent2.X_steady
+    X_steady_offspring += 0.05 .* randn(N)  # Add Gaussian noise
+    X_steady_offspring = clamp.(X_steady_offspring, 0.0, 1.0)
 
-    α_offspring = 0.5 .* (parent1.α .+ parent2.α)
-    X_steady_offspring = 0.5 .* (parent1.X_steady .+ parent2.X_steady)
+    # α_offspring = 0.5 .* (parent1.α .+ parent2.α)
+    # X_steady_offspring = 0.5 .* (parent1.X_steady .+ parent2.X_steady)
 
 
     W_offspring = spzeros(N, N)
@@ -443,11 +469,6 @@ function non_dominated_sorting(population::Vector{Chromosome})
                 strictly_better_in_at_least_one = (chrom1.fitness + tolerance > chrom2.fitness) ||
                                                   (chrom1.sparsity + tolerance < chrom2.sparsity)
 
-                # Debugging output
-                # println("Comparing Chromosome 1 (Fitness: $(chrom1.fitness), Sparsity: $(chrom1.sparsity))")
-                # println("         with Chromosome 2 (Fitness: $(chrom2.fitness), Sparsity: $(chrom2.sparsity))")
-                # println("Better in all: $better_in_all, Strictly better in at least one: $strictly_better_in_at_least_one")
-
                 if better_in_all && strictly_better_in_at_least_one
                     push!(dominated_solutions[chrom1], chrom2)
                 elseif (chrom2.fitness + tolerance >= chrom1.fitness) &&
@@ -599,10 +620,10 @@ function nsga2(
 
         # Step 3: Generate Offspring
         offspring = Chromosome[]
-        for _ in 1:population_size
+        for _ in 1:population_size*2
             parent1, parent2 = sample_distinct_parents(population)
             child = recombine_chromosomes_with_exploration(parent1, parent2, gen)
-            mutate_chromosome!(child, mutation_rate)
+            mutate_chromosome(child, gen, generations)
             check_and_fix_chromosome!(child)
             evaluate_fitness_multiobjective!(child)
             push!(offspring, child)
@@ -642,7 +663,8 @@ function nsga2(
             println("Visualizing progress at generation $gen...")
             p1 = (visualize_fitness_history(fitness_history))
             p2 = plot_pareto_fronts(fronts)
-            display(plot(p1, p2))
+            display(plot(p1, p2, title = "Generation $gen"))
+            # savefig("tmp\\generation $(gen).png")
         end
     end
 
@@ -683,28 +705,8 @@ function environmental_selection_simple(population_size::Int, fronts::Vector{Vec
     return new_population
 end
 
+function tp(z)
+    sum(z.!=0 .&& gs.==1)/ nnz(z)
+end 
 
-final_population, ph = nsga2(200, 500, pc = 1)
-
-
-Ws = [x.W for x in final_population]
-
-function find_kth_largest_sparse(matrix::SparseMatrixCSC{T}, k::Int) where T
-    # Extract nonzero elements from the sparse matrix
-    nonzeros = collect(matrix.nzval)  # `nzval` contains all nonzero values
-    
-    # Sort the nonzero elements in descending order
-    sorted_nonzeros = sort(nonzeros, rev=true)
-    
-    # Ensure k is valid
-    @assert k <= length(sorted_nonzeros) "k is larger than the number of nonzero elements"
-    
-    # Return the k-th largest element
-    return sorted_nonzeros[k]
-end
-sum(Ws[163].!=0)
-findmin([sum(x.!=0) for x in Ws])
-Ws[163].!=0 .&& gs.==0
-# prd = predict_time_series(final_population[k], re)
-# plot(prd[:,1,2])
-# plot!(re[2:end,1,2])
+final_population, ph = nsga2(100, 5000, pc = 20)
