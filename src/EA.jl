@@ -82,11 +82,11 @@ xlabel!("time")
 ylabel!("gene strength")
 display(p)
 
-# savefig("figs/time_series_g1_perturbed.png")
+# # savefig("figs/time_series_g1_perturbed.png")
 
-heatmap(Int.(gs), color = [:red, :black, :green])
-xlabel!("gene counter")
-ylabel!("gene counter")
+# heatmap(Int.(gs), color = [:red, :black, :green])
+# xlabel!("gene counter")
+# ylabel!("gene counter")
 # savefig("figs/heatmap_gs_d4_t1.png")
 
 # fn = "$(a)_2_gs.tsv"
