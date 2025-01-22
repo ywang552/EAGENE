@@ -34,7 +34,7 @@ ts = reshape(ts, 21, 5, 10)
 tsode = reshape(tsode, 21, 5, 10)
 # Observed data
 t_obs = 1:36  # Time steps 11 to 21
-X_obs = filtered_trial_1_matrix[1763,:]
+X_obs = filtered_trial_1_matrix[152,:]
 
 # Spring model (2nd-order differential equation)
 function spring!(du, u, p, t)
@@ -55,6 +55,7 @@ function loss(params)
 end
 
 # Initial guesses for parameters
+initial_params = [0.5, estimate_omega0_autocorr(X_obs, 36), median(X_obs)]  # β, ω0, X_steady
 initial_params = [0.5, estimate_omega0_autocorr(X_obs, 36), median(X_obs)]  # β, ω0, X_steady
 
 # Optimize the parameters
@@ -78,11 +79,15 @@ plot!(t_obs .+ 10, X_pred, label="solver (RK4)", linestyle=:dash, lw = 4)
 xlabel!("Time")
 ylabel!("Gene 1 Expression")
 
+X_obs
+X_pred
+
+# println("X_obs:", X_obs)
+# println("X_pred:", X_pred)
 
 
-
-
-
+plot(X_obs .- X_pred)
+println(round.(X_obs .- X_pred,digits = 3))
 display(p)
 
 
