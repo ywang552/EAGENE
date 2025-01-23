@@ -28,7 +28,7 @@ end
 
 
 z = 36
-g = 107
+g = 2115
 tr = 1
 # Observed data
 t_obs = 1:z  # Time steps 11 to 21
