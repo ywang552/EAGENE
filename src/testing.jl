@@ -27,11 +27,27 @@ function estimate_omega0_autocorr(time_series, time_step)
 end
 
 
-
-
+z = 36
+g = 107
+tr = 1
 # Observed data
-t_obs = 1:36  # Time steps 11 to 21
-X_obs = filtered_trial_1_matrix[6428,:]
+t_obs = 1:z  # Time steps 11 to 21
+X_obs = filtered_trial_1_matrix[g,:]
+
+findmax(X_obs)
+num_genes = size(filtered_trial_1_matrix)[1]
+specific_time_step = 23  # Adjust as needed
+max_indices = argmax.(eachrow(filtered_trial_1_matrix))  # Gets the index of max value for each gene
+
+# Identify genes to keep (i.e., genes where max is *not* at the specific time step)
+valid_gene_indices = findall(i -> max_indices[i] == specific_time_step, 1:num_genes)
+
+# Filter the matrix
+filtered_X_matrix = filtered_trial_1_matrix[valid_gene_indices, :]
+plot(filtered_X_matrix[5,:])
+
+
+
 
 function spring!(du, u, p, t)
     X, dX = u
@@ -46,7 +62,7 @@ end
 # Loss function to optimize with external force
 function loss(params)
     u0 = [X_obs[1], 0.0]  # Initial conditions: [X(0), dX(0)]
-    tspan = (0.0, 35.0)
+    tspan = (0., z-1.)
 
     prob = ODEProblem(spring!, u0, tspan, params)
     sol = solve(prob, saveat=1.0)
@@ -70,14 +86,14 @@ println("Optimized β: $β_opt, Optimized ω0: $ω0_opt, Optimized X_steady: $X_
 println(Optim.minimizer(result))
 # Solve the spring equation with optimized parameters
 u0 = [X_obs[1], 0.0]
-tspan = (0.0, 35.0)
+tspan = (0.0, z-1)
 prob = ODEProblem(spring!, u0, tspan, Optim.minimizer(result))
 sol = solve(prob, saveat=1.0)
 X_pred = [sol[i][1] for i in 1:length(t_obs)]
 
 # Plot observed vs predicted
-p = plot(t_obs .+ 10, X_obs, label="Observed", marker=:circle, lw = 4)
-plot!(t_obs .+ 10, X_pred, label="solver (RK4)", linestyle=:dash, lw = 4)
+p = plot(t_obs , X_obs, label="Observed", marker=:circle, lw = 4)
+plot!(t_obs , X_pred, label="solver (RK4)", linestyle=:dash, lw = 4)
 xlabel!("Time")
 ylabel!("Gene 1 Expression")
 
@@ -86,9 +102,11 @@ ylabel!("Gene 1 Expression")
 # println("X_pred:", X_pred)
 
 
-plot(X_obs .- X_pred)
-# println(round.(X_obs .- X_pred,digits = 3))
+# plot(X_obs .- X_pred)
+# # println(round.(X_obs .- X_pred,digits = 3))
 display(p)
+
+# savefig("figs\\g$(g)_$(tr)_externalforce.png")
 
 
 

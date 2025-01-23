@@ -94,7 +94,7 @@ println("Number of Zeros: ", num_zeros)
 println("Number of Nonzeros: ", num_nonzeros)
 println("Percentage of Zeros: ", zero_percentage, "%")
 
-threshold = 58
+threshold = 100
 
 # Find indices of genes that meet the threshold in at least one time step
 valid_gene_indices = []

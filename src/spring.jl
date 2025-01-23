@@ -30,11 +30,11 @@ estimate_omega0_autocorr(X_obs, 36)
 
 
 
-ts = reshape(ts, 21, 5, 10)
-tsode = reshape(tsode, 21, 5, 10)
+# ts = reshape(ts, 21, 5, 10)
+# tsode = reshape(tsode, 21, 5, 10)
 # Observed data
-t_obs = 1:36  # Time steps 11 to 21
-X_obs = filtered_trial_1_matrix[152,:]
+t_obs = 1:z  # Time steps 11 to 21
+X_obs = filtered_trial_1_matrix[g,:]
 
 # Spring model (2nd-order differential equation)
 function spring!(du, u, p, t)
@@ -47,7 +47,7 @@ end
 # Loss function to optimize
 function loss(params)
     u0 = [X_obs[1], 0.0]  # Initial conditions: [X(0), dX(0)]
-    tspan = (0.0, 35.0)
+    tspan = (0.0, z-1)
     prob = ODEProblem(spring!, u0, tspan, params)
     sol = solve(prob, saveat=1.0)
     X_pred = [sol[i][1] for i in 1:length(t_obs)]
@@ -68,7 +68,7 @@ println("Optimized β: $β_opt, Optimized ω0: $ω0_opt, Optimized X_steady: $X_
 
 # Solve the spring equation with optimized parameters
 u0 = [X_obs[1], 0.0]
-tspan = (0.0, 35.0)
+tspan = (0.0, z-1)
 prob = ODEProblem(spring!, u0, tspan, [β_opt, ω0_opt, X_steady_opt])
 sol = solve(prob, saveat=1.0)
 X_pred = [sol[i][1] for i in 1:length(t_obs)]
@@ -86,9 +86,11 @@ X_pred
 # println("X_pred:", X_pred)
 
 
-plot(X_obs .- X_pred)
-println(round.(X_obs .- X_pred,digits = 3))
-display(p)
+# plot(X_obs .- X_pred)
+# println(round.(X_obs .- X_pred,digits = 3))
+# display(p)
+
+# savefig("figs\\g$(g)_SHM.png")
 
 
 
