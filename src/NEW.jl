@@ -62,7 +62,6 @@ println("Trial 1 Matrix (first row): ", trial_1_matrix[1, :])
 println("Trial 2 Matrix (first row): ", trial_2_matrix[1, :])
 println("Trial 3 Matrix (first row): ", trial_3_matrix[1, :])
 
-
 using Statistics, Plots
 all_values = vcat(trial_1_matrix[:], trial_2_matrix[:], trial_3_matrix[:])
 
@@ -116,5 +115,48 @@ println("Number of Genes Before Filtering: ", num_genes)
 println("Number of Genes After Filtering: ", length(valid_gene_indices))
 println("Example Filtered Gene Names: ", filtered_gene_names[1:5])  # Preview first 5
 
-filtered_trial_1_matrix[1,:]
 plot(filtered_trial_1_matrix[1,:])
+num_genes = size(filtered_trial_1_matrix, 1)
+
+using Statistics
+
+function classify_inhibition(X_row)
+    ΔX = diff(X_row)  # Compute expression changes
+    inhibitory_changes = filter(x -> x < 0, ΔX)  # Keep only inhibitory drops
+
+    if isempty(inhibitory_changes)
+        return (0, 0, 0)  # No inhibition events
+    end
+
+    # Define classification thresholds based on percentiles
+    p25 = quantile(inhibitory_changes, 0.25)
+    p75 = quantile(inhibitory_changes, 0.75)
+
+    # Count occurrences in each category
+    num_small = count(x -> x < p25, inhibitory_changes)
+    num_medium = count(x -> p25 ≤ x ≤ p75, inhibitory_changes)
+    num_large = count(x -> x > p75, inhibitory_changes)
+
+    return (num_small, num_medium, num_large)
+end
+
+# Apply classification to all genes
+inhibition_classifications = [classify_inhibition(filtered_trial_1_matrix[i, :]) for i in 1:num_genes]
+
+
+# Convert to DataFrame for analysis
+df_inhibition = DataFrame(
+    Gene = 1:num_genes,
+    Small_Inhibition = [x[1] for x in inhibition_classifications],
+    Medium_Inhibition = [x[2] for x in inhibition_classifications],
+    Large_Inhibition = [x[3] for x in inhibition_classifications]
+)
+
+
+all_inhibitory_changes = vcat([diff(filtered_trial_1_matrix[i, :]) for i in 1:num_genes]...)  # Flatten inhibition changes
+all_inhibitory_changes = filter(x -> x < 0, all_inhibitory_changes)  # Keep only inhibitory drops
+
+# Compute variance
+inhibition_variance = var(all_inhibitory_changes)
+
+println("Variance of Inhibitory Changes Across Genes: ", inhibition_variance)
