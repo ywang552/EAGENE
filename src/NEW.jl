@@ -305,3 +305,4 @@ sampled_inhibition_magnitudes_raw = all_inhibition_magnitudes_raw[sample_indices
 scatter(sampled_expression_levels_raw, sampled_inhibition_magnitudes_raw, xlabel="Gene Expression Level (Unnormalized)",
         ylabel="Inhibition Magnitude", title="Correlation Between Gene Expression and Inhibition Strength (Unnormalized, Sampled)",
         alpha=0.6, marker=:o)
+
