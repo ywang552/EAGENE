@@ -306,3 +306,20 @@ scatter(sampled_expression_levels_raw, sampled_inhibition_magnitudes_raw, xlabel
         ylabel="Inhibition Magnitude", title="Correlation Between Gene Expression and Inhibition Strength (Unnormalized, Sampled)",
         alpha=0.6, marker=:o)
 
+
+# Function to extract inhibition events from a gene's time series
+function extract_inhibition_events(X_row)
+    ΔX = diff(X_row)  # Compute expression changes
+    inhibition_times = findall(x -> x < 0, ΔX)  # Identify inhibition time steps
+    inhibition_values = ΔX[inhibition_times]  # Extract inhibition magnitudes
+    expression_levels = X_row[inhibition_times]  # Expression levels at inhibition points
+
+    return (inhibition_times, inhibition_values, expression_levels)
+end
+
+
+
+
+# Apply to all genes
+gene_inhibition_data = [extract_inhibition_events(filtered_trial_1_matrix[i,:]) for i in 1:num_genes]
+
