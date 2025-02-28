@@ -314,7 +314,7 @@ function extract_inhibition_events(X_row)
     inhibition_values = ΔX[inhibition_times]  # Extract inhibition magnitudes
     expression_levels = X_row[inhibition_times]  # Expression levels at inhibition points
 
-    return (inhibition_times, inhibition_values, expression_levels)
+    return (inhibition_values, expression_levels)
 end
 
 
@@ -322,4 +322,121 @@ end
 
 # Apply to all genes
 gene_inhibition_data = [extract_inhibition_events(filtered_trial_1_matrix[i,:]) for i in 1:num_genes]
+using LinearAlgebra, DataFrames, Plots
 
+function fit_per_gene_inhibition(gene_inhibition_data, num_genes)
+    gene_lambdas = Dict{Int, Float64}()  # Store λ values per gene
+    mse_per_gene = Dict{Int, Float64}()  # Store MSE per gene
+
+    for gene in 1:num_genes
+        # Extract inhibition data for this gene
+        gene_data = gene_inhibition_data[gene]  # Tuple: (g_inhibited, g_previous)
+
+        if length(gene_data[1]) >= 1  # Ensure enough data points
+            g_previous = gene_data[2]  # Vector of pre-inhibition values
+            g_inhibited = gene_data[1]  # Vector of post-inhibition values
+
+            if norm(g_previous) > 0  # Avoid division by zero
+                λ_j = g_previous \ g_inhibited  # Solve for λ_j using least squares
+                mse = mean(((g_inhibited - λ_j * g_previous) ./ g_inhibited) .^ 2)  # Compute MSE
+
+                gene_lambdas[gene] = λ_j
+                mse_per_gene[gene] = mse
+            else
+                gene_lambdas[gene] = NaN
+                mse_per_gene[gene] = NaN
+            end
+        end
+    end
+
+    return gene_lambdas, mse_per_gene
+end
+
+function plot_inhibition_results(gene_lambdas, mse_per_gene)
+    lambdas = collect(values(gene_lambdas))
+    mses = collect(values(mse_per_gene))
+
+    # Histogram of λ values
+    histogram(lambdas, bins=20, xlabel="Estimated Inhibition Factor (λ)", ylabel="Number of Genes",
+              title="Distribution of Gene Inhibition Factors (λ)", legend=false)
+
+    # Scatter plot of λ vs. MSE
+    scatter(lambdas, mses, xlabel="Estimated Inhibition Factor (λ)", ylabel="MSE",
+            title="MSE vs. Estimated Inhibition Factor", legend=false)
+end
+
+gene_inhibition_data[1]
+
+
+
+# Example Usage
+num_genes = 7566  # Adjust based on your dataset
+gene_lambdas, mse_per_gene = fit_per_gene_inhibition(gene_inhibition_data, num_genes)
+
+# Convert to DataFrame for easy analysis
+df = DataFrame(Gene=collect(keys(gene_lambdas)), Lambda=collect(values(gene_lambdas)), MSE=collect(values(mse_per_gene)), header = false)
+mean(df.MSE)
+
+using Statistics
+using StatsBase
+
+using HypothesisTests
+
+function spearman_correlation(x, y)
+    # Compute ranks manually
+    rank_x = sortperm(sortperm(x)) .+ 1  # Convert indices to rank positions
+    rank_y = sortperm(sortperm(y)) .+ 1
+
+    # Compute correlation between ranks
+    return cor(rank_x, rank_y)
+end
+
+
+function classify_gene_trend_with_outliers(gene_inhibition_data, threshold=-1, outlier_thresh=4.0)
+    gene_classes = Dict{Int, String}()  # Store classification for each gene
+
+    for gene in 1:num_genes
+        gene_data = gene_inhibition_data[gene]  # Tuple: (g_inhibited, g_previous)
+        g_previous = gene_data[2]  # Vector of pre-inhibition values
+        g_inhibited = gene_data[1]  # Vector of post-inhibition values
+        if length(g_previous) >= 1
+            # Sort data by g_previous
+            sorted_indices = sortperm(g_previous)
+            g_previous_sorted = g_previous[sorted_indices]
+            g_inhibited_sorted = g_inhibited[sorted_indices]
+
+            # Compute correlation
+            correlation = spearman_correlation(g_previous_sorted, g_inhibited_sorted)
+
+            # Detect outliers
+            predicted_inhibition = mean(g_inhibited_sorted ./ g_previous_sorted)
+            residuals = abs.(g_inhibited_sorted .- predicted_inhibition .* g_previous_sorted)
+            std_residuals = std(residuals)
+
+            num_outliers = sum(residuals .> (outlier_thresh * std_residuals))
+
+            # Apply 0-vote policy: if even 1 strong outlier exists, classify as "Uncertain"
+            if num_outliers > 0
+                gene_classes[gene] = "Uncertain"
+            elseif correlation < threshold
+                gene_classes[gene] = "Trend Follows"
+            elseif correlation > -threshold
+                gene_classes[gene] = "Opposite Trend"
+            else
+                gene_classes[gene] = "No Clear Trend"
+            end
+        end
+    end
+
+    return gene_classes
+end
+
+# Example usage
+gene_classes = classify_gene_trend_with_outliers(gene_inhibition_data)
+
+# Count how many genes fall into each category
+println("Classification Summary:")
+println(count(==( "Trend Follows"), values(gene_classes)), " genes follow trend")
+println(count(==( "No Clear Trend"), values(gene_classes)), " genes have no clear trend")
+println(count(==( "Opposite Trend"), values(gene_classes)), " genes show the opposite trend")
+println(count(==( "Uncertain"), values(gene_classes)), " genes have extreme outliers")
